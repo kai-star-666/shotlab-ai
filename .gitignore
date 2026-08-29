@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.streamlit/secrets.toml
+.netlify-appdata/
+.netlify/
+.learnings/
+.claude/
+.chrome-profile-*/
+outputs/*
+!outputs/.gitkeep
+outputs_smoke/
+outputs_v02_smoke/
+outputs_v02_verify/
+outputs_v03_verify/
