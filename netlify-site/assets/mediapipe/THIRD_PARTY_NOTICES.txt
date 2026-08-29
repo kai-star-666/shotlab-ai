@@ -1,0 +1,5 @@
+MediaPipe Tasks Vision 1.0.1
+Copyright 2023 The MediaPipe Authors
+Licensed under the Apache License, Version 2.0.
+Source: https://www.npmjs.com/package/@mediapipe/tasks-vision
+

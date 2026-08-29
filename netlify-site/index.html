@@ -6,12 +6,14 @@
   <meta name="theme-color" content="#071017">
   <meta name="description" content="ShotLab AI：上传投篮视频，获得动作数据、关键阶段和训练建议。">
   <title>ShotLab AI｜篮球投篮动作分析</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/site.css">
+  <link rel="stylesheet" href="/assets/analyzer.css">
 </head>
 <body>
   <header class="nav shell">
     <a class="brand" href="#top" aria-label="ShotLab AI 首页"><span>S</span>SHOTLAB AI</a>
-    <a class="nav-cta js-analyzer-link" href="#experience">开始分析</a>
+    <a class="nav-cta js-analyzer-link" href="#analyzer">开始分析</a>
   </header>
 
   <main id="top">
@@ -19,9 +21,9 @@
       <div class="hero-copy">
         <p class="eyebrow">AI BASKETBALL MOTION ANALYSIS · WEB BETA</p>
         <h1>让投篮动作从“感觉”，变成<span>看得见的数据</span></h1>
-        <p class="lead">上传单次或连续投篮视频，自动识别动作阶段、重建人体骨架，并获得基于数据的动作问题与专项训练建议。</p>
+        <p class="lead">上传一段短投篮视频，在当前页面直接识别动作阶段、重建人体骨架，并获得基于数据的动作问题与专项训练建议。</p>
         <div class="actions">
-          <a class="button primary js-analyzer-link" href="#experience">上传视频开始分析 <b>↗</b></a>
+          <a class="button primary js-analyzer-link" href="#analyzer">上传视频开始分析 <b>↓</b></a>
           <a class="button ghost" href="#how">先看拍摄要求</a>
         </div>
         <p class="micro">无需安装 App · 支持电脑与手机浏览器 · 手机可直接从相册选择</p>
@@ -38,14 +40,73 @@
           </div>
           <div class="pose-data"><small>RELEASE CANDIDATE</small><strong>肘角 153.4°</strong><span>动力链时序 +0.07s</span></div>
         </div>
-        <div class="metric-card glass"><small>本次识别</small><strong>3 次投篮</strong><span>已自动切分逐球片段</span></div>
+        <div class="metric-card glass"><small>分析方式</small><strong>浏览器内完成</strong><span>视频无需上传服务器</span></div>
       </div>
     </section>
 
+    <section id="analyzer" class="analyzer-section shell">
+      <div class="analyzer-heading">
+        <div>
+          <p class="eyebrow">DIRECT BROWSER ANALYSIS</p>
+          <h2>选择视频，马上开始分析</h2>
+          <p>视频仅在你的手机或电脑内处理，不会上传到服务器。首次分析需加载约 8MB 的姿态模型。</p>
+        </div>
+        <span class="local-badge">🔒 本地处理</span>
+      </div>
+
+      <div class="analyzer-grid">
+        <div class="upload-panel">
+          <label class="field-label" for="shooting-hand">投篮手</label>
+          <div class="hand-switch" id="shooting-hand">
+            <label><input type="radio" name="hand" value="right" checked><span>右手</span></label>
+            <label><input type="radio" name="hand" value="left"><span>左手</span></label>
+          </div>
+
+          <label class="file-drop" for="video-file">
+            <input id="video-file" type="file" accept="video/mp4,video/quicktime,.mp4,.mov">
+            <b>＋ 选择投篮视频</b>
+            <span>建议 2–30 秒 · MP4/H.264 · 全身入镜</span>
+          </label>
+          <p id="file-meta" class="file-meta">尚未选择视频</p>
+          <video id="video-preview" controls muted playsinline hidden></video>
+
+          <button id="analyze-button" class="button primary analyze-button" type="button" disabled>开始 AI 分析</button>
+          <div id="analysis-progress" class="progress-wrap" hidden>
+            <div><span id="progress-label">准备分析</span><b id="progress-value">0%</b></div>
+            <progress id="progress-bar" max="100" value="0"></progress>
+          </div>
+          <p id="analysis-message" class="analysis-message" role="status">请选择一段投篮视频。</p>
+        </div>
+
+        <div id="result-panel" class="result-panel empty">
+          <div class="empty-state" id="empty-state">
+            <span>◌</span><h3>分析结果会显示在这里</h3><p>系统将提取准备、蓄力和出手候选阶段，并生成针对性训练建议。</p>
+          </div>
+          <div id="analysis-result" hidden>
+            <div class="result-top">
+              <div><small>识别有效率</small><strong id="quality-score">—</strong></div>
+              <span id="quality-label">等待分析</span>
+            </div>
+            <canvas id="keyframe-canvas"></canvas>
+            <p class="keyframe-label">出手候选关键帧 · 橙色为投篮侧肢体</p>
+            <div class="metrics-grid">
+              <div><small>出手肘角</small><strong id="metric-elbow">—</strong></div>
+              <div><small>最低膝角</small><strong id="metric-knee">—</strong></div>
+              <div><small>屈伸幅度</small><strong id="metric-range">—</strong></div>
+              <div><small>出手躯干倾角</small><strong id="metric-trunk">—</strong></div>
+            </div>
+            <h3 class="advice-title">本次训练建议</h3>
+            <div id="advice-list" class="advice-list"></div>
+          </div>
+        </div>
+      </div>
+      <p class="science-note">说明：当前为单摄像头二维姿态估计，角度和阶段属于训练复盘参考，不等同于三维动作捕捉或医疗评估。</p>
+    </section>
+
     <section class="proof shell" aria-label="核心能力">
-      <div><strong>连续投篮</strong><span>自动切分逐球动作</span></div>
-      <div><strong>全身姿态</strong><span>关键角度与时间轴</span></div>
-      <div><strong>出手辅助</strong><span>手型与篮球轨迹校验</span></div>
+      <div><strong>直达分析</strong><span>不跳转第三方页面</span></div>
+      <div><strong>全身姿态</strong><span>关键角度与动作阶段</span></div>
+      <div><strong>拍摄质检</strong><span>遮挡与识别有效率</span></div>
       <div><strong>训练处方</strong><span>问题对应可执行练习</span></div>
     </section>
 
@@ -54,8 +115,8 @@
       <h2>三步完成一次动作复盘</h2>
       <div class="steps">
         <article><b>01</b><h3>固定机位拍摄</h3><p>优先投篮手一侧，全身入镜，人物高度占画面约 45%–70%。</p></article>
-        <article><b>02</b><h3>上传原始视频</h3><p>支持 MP4、MOV、AVI；优先 720p 以上清晰画面，单次或连续投篮均可。</p></article>
-        <article><b>03</b><h3>查看结果并训练</h3><p>获得关键帧、分析视频、动作数据、问题解释与对应专项训练建议。</p></article>
+        <article><b>02</b><h3>选择原始视频</h3><p>推荐 MP4/H.264；优先 720p 以上清晰画面，当前版本最适合 2–30 秒单次投篮。</p></article>
+        <article><b>03</b><h3>查看结果并训练</h3><p>获得出手关键帧、核心动作角度、问题解释与对应专项训练建议。</p></article>
       </div>
     </section>
 
@@ -65,11 +126,11 @@
         <h2>下一次投篮，从数据开始。</h2>
         <p>当前为个人项目测试版。二维姿态结果用于训练复盘，不替代专业动作捕捉或医疗评估。</p>
       </div>
-      <a class="button primary js-analyzer-link" href="#experience">进入 ShotLab AI <b>↗</b></a>
+      <a class="button primary js-analyzer-link" href="#analyzer">立即选择视频 <b>↑</b></a>
     </section>
   </main>
 
   <footer class="shell"><span>SHOTLAB AI · 2026</span><span>Built for better shooting decisions.</span></footer>
-  <script src="/assets/site.js"></script>
+  <script type="module" src="/assets/analyzer-app.mjs"></script>
 </body>
 </html>
