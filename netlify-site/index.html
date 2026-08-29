@@ -9,6 +9,8 @@
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/site.css">
   <link rel="stylesheet" href="/assets/analyzer.css">
+  <link rel="stylesheet" href="/assets/coach-report.css">
+  <link rel="stylesheet" href="/assets/coach-report-responsive.css">
 </head>
 <body>
   <header class="nav shell">
@@ -83,20 +85,72 @@
             <span>◌</span><h3>分析结果会显示在这里</h3><p>系统将提取准备、蓄力和出手候选阶段，并生成针对性训练建议。</p>
           </div>
           <div id="analysis-result" hidden>
-            <div class="result-top">
-              <div><small>识别有效率</small><strong id="quality-score">—</strong></div>
-              <span id="quality-label">等待分析</span>
-            </div>
-            <canvas id="keyframe-canvas"></canvas>
-            <p class="keyframe-label">出手候选关键帧 · 橙色为投篮侧肢体</p>
-            <div class="metrics-grid">
-              <div><small>出手肘角</small><strong id="metric-elbow">—</strong></div>
-              <div><small>最低膝角</small><strong id="metric-knee">—</strong></div>
-              <div><small>屈伸幅度</small><strong id="metric-range">—</strong></div>
-              <div><small>出手躯干倾角</small><strong id="metric-trunk">—</strong></div>
-            </div>
-            <h3 class="advice-title">本次训练建议</h3>
-            <div id="advice-list" class="advice-list"></div>
+            <section class="report-block report-summary">
+              <div class="block-heading"><span>01</span><div><small>ANALYSIS SUMMARY</small><h3>本次分析总结</h3></div></div>
+              <div class="result-top"><div><small>综合识别质量</small><strong id="quality-score">—</strong></div><span id="quality-label">等待分析</span></div>
+              <p id="analysis-summary-text" class="summary-copy"></p>
+              <div class="metrics-grid">
+                <div><small>出手肘角</small><strong id="metric-elbow">—</strong></div>
+                <div><small>最低膝角</small><strong id="metric-knee">—</strong></div>
+                <div><small>屈伸幅度</small><strong id="metric-range">—</strong></div>
+                <div><small>出手躯干倾角</small><strong id="metric-trunk">—</strong></div>
+              </div>
+              <canvas id="keyframe-canvas"></canvas>
+              <p class="keyframe-label">出手候选关键帧 · 橙色为投篮侧肢体</p>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>02</span><div><small>KEEP THESE</small><h3>当前动作优点</h3></div></div>
+              <div id="strength-list" class="strength-list"></div>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>03</span><div><small>TOP PRIORITIES</small><h3>最需要改的两个问题</h3></div></div>
+              <div id="advice-list" class="priority-list"></div>
+            </section>
+
+            <section class="report-block next-shot-block">
+              <div class="block-heading"><span>04</span><div><small>NEXT REP</small><h3>下一球只做这两件事</h3></div></div>
+              <ol id="next-shot-list"></ol>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>05</span><div><small>MEASURED VS REFERENCE</small><h3>实际数据 vs 训练参考区间</h3></div></div>
+              <div class="table-scroll"><table class="data-table"><thead><tr><th>指标</th><th>当前实测</th><th>建议参考</th><th>偏差</th><th>评价</th><th>下一步</th><th>可信度</th></tr></thead><tbody id="data-table-body"></tbody></table></div>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>06</span><div><small>JOINT BREAKDOWN</small><h3>各关节详细分析</h3></div></div>
+              <div id="joint-sections" class="joint-sections"></div>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>07</span><div><small>RHYTHM</small><h3>投篮节奏分析</h3></div></div>
+              <div id="rhythm-timeline" class="rhythm-timeline"></div>
+              <div id="rhythm-copy" class="rhythm-copy"></div>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>08</span><div><small>SKELETON REPLAY</small><h3>骨架动作回放</h3></div></div>
+              <canvas id="skeleton-canvas" width="720" height="420"></canvas>
+              <div class="replay-controls"><button id="replay-button" type="button">▶ 播放骨架</button><input id="replay-range" type="range" min="0" max="100" value="0"><span id="replay-time">0.00s</span></div>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>09</span><div><small>ANGLE CURVES</small><h3>角度变化曲线</h3></div></div>
+              <canvas id="angle-chart" width="900" height="330"></canvas>
+              <div class="chart-legend"><span class="elbow-dot">肘角</span><span class="knee-dot">膝角</span><span class="hip-dot">髋角</span><span class="trunk-dot">躯干倾角</span></div>
+            </section>
+
+            <section class="report-block">
+              <div class="block-heading"><span>10</span><div><small>TRAINING PLAN</small><h3>完整训练处方</h3></div></div>
+              <div id="prescription-list" class="prescription-list"></div>
+            </section>
+
+            <section class="report-block limitation-block">
+              <div class="block-heading"><span>11</span><div><small>LIMITATIONS</small><h3>技术限制</h3></div></div>
+              <p>当前为单摄像头二维姿态趋势分析。相机角度、透视、遮挡和画面距离都会影响结果；系统不会用手腕关键点伪造手指拨球结论，也不会把某个角度当作所有人的标准答案。单球只能判断本次趋势，多球稳定性需要在下一版本中用同机位多次样本计算。</p>
+            </section>
           </div>
         </div>
       </div>
