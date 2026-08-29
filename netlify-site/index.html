@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#071017">
+  <meta name="description" content="ShotLab AI：上传投篮视频，获得动作数据、关键阶段和训练建议。">
+  <title>ShotLab AI｜篮球投篮动作分析</title>
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <header class="nav shell">
+    <a class="brand" href="#top" aria-label="ShotLab AI 首页"><span>S</span>SHOTLAB AI</a>
+    <a class="nav-cta js-analyzer-link" href="#experience">开始分析</a>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-copy">
+        <p class="eyebrow">AI BASKETBALL MOTION ANALYSIS · WEB BETA</p>
+        <h1>让投篮动作从“感觉”，变成<span>看得见的数据</span></h1>
+        <p class="lead">上传单次或连续投篮视频，自动识别动作阶段、重建人体骨架，并获得基于数据的动作问题与专项训练建议。</p>
+        <div class="actions">
+          <a class="button primary js-analyzer-link" href="#experience">上传视频开始分析 <b>↗</b></a>
+          <a class="button ghost" href="#how">先看拍摄要求</a>
+        </div>
+        <p class="micro">无需安装 App · 支持电脑与手机浏览器 · 手机可直接从相册选择</p>
+      </div>
+      <div class="visual" aria-label="投篮分析结果示意">
+        <div class="court-line"></div>
+        <div class="score-card glass">
+          <div><small>拍摄质量</small><strong>86<span>/100</span></strong></div>
+          <i>画面清晰</i>
+        </div>
+        <div class="pose-card glass">
+          <div class="pose">
+            <span class="head"></span><span class="body"></span><span class="arm a1"></span><span class="arm a2"></span><span class="leg l1"></span><span class="leg l2"></span><span class="ball"></span>
+          </div>
+          <div class="pose-data"><small>RELEASE CANDIDATE</small><strong>肘角 153.4°</strong><span>动力链时序 +0.07s</span></div>
+        </div>
+        <div class="metric-card glass"><small>本次识别</small><strong>3 次投篮</strong><span>已自动切分逐球片段</span></div>
+      </div>
+    </section>
+
+    <section class="proof shell" aria-label="核心能力">
+      <div><strong>连续投篮</strong><span>自动切分逐球动作</span></div>
+      <div><strong>全身姿态</strong><span>关键角度与时间轴</span></div>
+      <div><strong>出手辅助</strong><span>手型与篮球轨迹校验</span></div>
+      <div><strong>训练处方</strong><span>问题对应可执行练习</span></div>
+    </section>
+
+    <section id="how" class="section shell">
+      <p class="eyebrow">HOW IT WORKS</p>
+      <h2>三步完成一次动作复盘</h2>
+      <div class="steps">
+        <article><b>01</b><h3>固定机位拍摄</h3><p>优先投篮手一侧，全身入镜，人物高度占画面约 45%–70%。</p></article>
+        <article><b>02</b><h3>上传原始视频</h3><p>支持 MP4、MOV、AVI；优先 720p 以上清晰画面，单次或连续投篮均可。</p></article>
+        <article><b>03</b><h3>查看结果并训练</h3><p>获得关键帧、分析视频、动作数据、问题解释与对应专项训练建议。</p></article>
+      </div>
+    </section>
+
+    <section id="experience" class="experience shell">
+      <div>
+        <p class="eyebrow">READY TO ANALYZE</p>
+        <h2>下一次投篮，从数据开始。</h2>
+        <p>当前为个人项目测试版。二维姿态结果用于训练复盘，不替代专业动作捕捉或医疗评估。</p>
+      </div>
+      <a class="button primary js-analyzer-link" href="#experience">进入 ShotLab AI <b>↗</b></a>
+    </section>
+  </main>
+
+  <footer class="shell"><span>SHOTLAB AI · 2026</span><span>Built for better shooting decisions.</span></footer>
+  <script src="/assets/site.js"></script>
+</body>
+</html>

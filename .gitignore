@@ -6,6 +6,7 @@ __pycache__/
 .learnings/
 .claude/
 .chrome-profile-*/
+.tools/
 outputs/*
 !outputs/.gitkeep
 outputs_smoke/
