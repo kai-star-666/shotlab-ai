@@ -1,5 +1,5 @@
-import { FilesetResolver, PoseLandmarker } from "/assets/mediapipe/vision_bundle.mjs";
-import { formatMetric, summarizePoseFrames } from "/assets/analyzer-core.mjs";
+import { FilesetResolver, PoseLandmarker } from "/assets/mediapipe/vision_bundle.mjs?v=20260830-1";
+import { formatMetric, summarizePoseFrames } from "/assets/analyzer-core.mjs?v=20260830-1";
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -16,6 +16,8 @@ let poseLandmarker = null;
 let inferenceTimestamp = 0;
 let replayAnimation = null;
 let replayState = null;
+let selectedFile = null;
+let currentSummary = null;
 
 if (/MicroMessenger/i.test(navigator.userAgent)) document.documentElement.classList.add("wechat-browser");
 
@@ -62,6 +64,7 @@ async function loadModel() {
 input.addEventListener("change", async () => {
   const file = input.files?.[0];
   if (!file) return;
+  selectedFile = file;
   if (file.size > 200 * 1024 * 1024) {
     message.textContent = "视频超过 200MB，请先裁剪到 30 秒左右再分析。";
     input.value = "";
@@ -104,7 +107,7 @@ button.addEventListener("click", async () => {
       if (index % 3 === 0) await new Promise(requestAnimationFrame);
     }
     const hand = document.querySelector('input[name="hand"]:checked').value;
-    const summary = summarizePoseFrames(frames, hand);
+    const summary = summarizePoseFrames(frames, hand, { duration, sourceFrames: null, fileName: selectedFile?.name || "当前视频" });
     setProgress(94, "正在生成训练建议");
     await renderResult(summary, hand);
     setProgress(100, "分析完成");
@@ -120,9 +123,11 @@ button.addEventListener("click", async () => {
 
 async function renderResult(summary, hand) {
   stopReplay();
+  currentSummary = summary;
   const percent = summary.capture.score;
   $("#quality-score").textContent = `${percent}/100`;
   $("#quality-label").textContent = `${summary.capture.confidence}可信度`;
+  $("#one-line-summary").textContent = summary.summary.oneLine;
   $("#metric-elbow").textContent = formatMetric(summary.metrics.elbowRelease);
   $("#metric-knee").textContent = formatMetric(summary.metrics.kneeLowest);
   $("#metric-range").textContent = formatMetric(summary.metrics.kneeRange);
@@ -130,8 +135,11 @@ async function renderResult(summary, hand) {
   $("#analysis-summary-text").textContent = summary.capture.confidence === "低"
     ? `本次综合识别质量 ${percent}/100，有效帧 ${Math.round(summary.validRatio * 100)}%。当前证据不足，系统已停止输出精确动作纠正。`
     : `本次综合识别质量 ${percent}/100，共分析 ${summary.totalFrames} 个时间点，其中 ${summary.validFrames} 帧可用于动作判断。平均关键点可见度 ${Math.round(summary.capture.averageVisibility * 100)}%，人物高度约占画面 ${Math.round(summary.capture.bodyScale * 100)}%。以下结论优先基于相对幅度、变化趋势和动作连续性。`;
+  renderSummaryFacts(summary.summary);
 
-  $("#strength-list").replaceChildren(...summary.strengths.map((text) => makeCard("✓", "继续保持", text, "strength-card")));
+  const strengths = summary.strengths.length ? summary.strengths : ["当前没有足够证据判断动作优点，请先提高拍摄质量。"];
+  $("#strength-list").replaceChildren(...strengths.map((text) => makeCard("✓", "继续保持", text, "strength-card")));
+  $("#keep-list").replaceChildren(makeText("h4", "mini-heading", "这次先不要改"), ...summary.keep.map((text) => makeText("p", "keep-item", text)));
   $("#advice-list").replaceChildren(...summary.priorities.map((issue, index) => {
     const article = document.createElement("article");
     article.className = "priority-card";
@@ -146,22 +154,40 @@ async function renderResult(summary, hand) {
     return article;
   }));
   if (!summary.priorities.length) $("#advice-list").append(makeCard("✓", "本次没有突出问题", "先保持当前动作，下一球重点验证能否重复。", "strength-card"));
-  $("#next-shot-list").replaceChildren(...summary.nextShot.slice(0, 2).map((text) => makeText("li", "", text)));
+  $("#why-list").replaceChildren(makeText("h4", "mini-heading", "为什么优先改这些"), ...summary.why.map((text) => makeText("p", "why-item", text)));
+  $("#next-shot-list").replaceChildren(...summary.nextRep.slice(0, 2).map((text) => makeText("li", "", text)));
   renderDataTable(summary.dataRows);
   renderJointSections(summary.sections.filter((section) => section.id !== "rhythm"));
   renderRhythm(summary);
   renderPrescriptions(summary.prescriptions);
   renderAngleChart(summary.curves, summary.events);
-  prepareReplay(summary.analysisFrames, hand);
+  prepareReplay(summary.analysisFrames, hand, summary.events);
+  prepareOverlayReplay(summary, hand);
+  $("#limitation-list").replaceChildren(...summary.technicalLimitations.map((text) => makeText("li", "", text)));
+  renderDebugData(summary);
   if (summary.release) {
     await seek(summary.release.time);
-    drawKeyframe(summary.release.landmarks, hand);
+    drawKeyframe(summary.release, hand, summary.events);
   } else {
     clearCanvas($("#keyframe-canvas"), "关键帧证据不足，请按拍摄建议重新拍摄");
   }
   $("#empty-state").hidden = true;
   $("#analysis-result").hidden = false;
   $("#result-panel").classList.remove("empty");
+}
+
+function renderSummaryFacts(summary) {
+  const facts = [
+    ["文件", summary.fileName], ["时长", `${summary.duration.toFixed(2)}s`],
+    ["源总帧", summary.sourceFrames ?? "—（浏览器未提供）"], ["采样点", summary.sampledFrames],
+    ["有效姿态帧", summary.validPoseFrames], ["检测率", `${summary.poseDetectionRate}%`],
+    ["投篮手", summary.shootingHand], ["关键阶段", summary.keyPhasesFound.length ? summary.keyPhasesFound.join(" / ") : "未稳定识别"],
+  ];
+  $("#summary-facts").replaceChildren(...facts.map(([label, value]) => {
+    const item = document.createElement("div");
+    item.append(makeText("small", "", label), makeText("b", "", String(value)));
+    return item;
+  }));
 }
 
 function makeText(tag, className, text) {
@@ -189,18 +215,27 @@ function makeCard(icon, title, text, className) {
 
 function renderDataTable(rows) {
   const body = $("#data-table-body");
+  const cards = $("#data-card-list");
   if (!rows.length) {
     const tr = document.createElement("tr");
     const td = makeText("td", "", "当前识别可信度低，请复拍后再生成数据对照。");
     td.colSpan = 7;
     tr.append(td);
     body.replaceChildren(tr);
+    cards.replaceChildren(makeCard("!", "暂无可靠数据", "当前识别可信度低，请复拍后再生成数据对照。", "data-card"));
     return;
   }
   body.replaceChildren(...rows.map((row) => {
     const tr = document.createElement("tr");
     for (const key of ["metric", "current", "reference", "deviation", "evaluation", "nextStep", "confidence"]) tr.append(makeText("td", key === "current" ? "measured" : "", row[key]));
     return tr;
+  }));
+  cards.replaceChildren(...rows.map((row) => {
+    const article = document.createElement("article");
+    article.className = "data-card";
+    article.append(makeText("h4", "", row.metric), makeText("strong", "", row.current));
+    for (const [label, key] of [["训练参考", "reference"], ["偏差", "deviation"], ["评价", "evaluation"], ["下一步", "nextStep"], ["可信度", "confidence"]]) article.append(labeledLine(label, row[key]));
+    return article;
   }));
 }
 
@@ -242,13 +277,14 @@ function renderRhythm(summary) {
 }
 
 function renderPrescriptions(drills) {
-  $("#prescription-list").replaceChildren(...drills.map((drill, index) => {
+  const safeDrills = drills.length ? drills : [{ name: "暂不安排专项纠正", forIssue: "数据不足", purpose: "先获得可信画面", steps: "按拍摄要求重新拍摄一球。", sets: "1 组", reps: "3 球", focus: "全身入镜、机位固定。", rightFeeling: "画面中关键点连续稳定。", commonMistakes: "人物过小或手持跟拍。" }];
+  $("#prescription-list").replaceChildren(...safeDrills.map((drill, index) => {
     const article = document.createElement("article");
     article.append(makeText("span", "", `处方 ${String(index + 1).padStart(2, "0")}`), makeText("h4", "", drill.name), labeledLine("对应问题", drill.forIssue), labeledLine("训练目的", drill.purpose), labeledLine("具体做法", drill.steps));
     const dose = document.createElement("div");
     dose.className = "drill-dose";
     dose.append(makeText("b", "", drill.sets), makeText("b", "", drill.reps));
-    article.append(dose, labeledLine("训练关注点", drill.focus));
+    article.append(dose, labeledLine("训练关注点", drill.focus), labeledLine("做对的感觉", drill.rightFeeling), labeledLine("常见错误", drill.commonMistakes));
     return article;
   }));
 }
@@ -323,8 +359,8 @@ function drawPose(context, landmarks, width, height, hand, background = true) {
   }
 }
 
-function prepareReplay(frames, hand) {
-  replayState = { frames, hand };
+function prepareReplay(frames, hand, events) {
+  replayState = { frames, hand, events };
   $("#replay-range").value = 0;
   if (!frames.length) return clearCanvas($("#skeleton-canvas"), "有效帧不足，无法生成骨架回放");
   drawReplayFrame(0);
@@ -337,15 +373,73 @@ function drawReplayFrame(index) {
   const frame = frames[safeIndex];
   const canvas = $("#skeleton-canvas");
   drawPose(canvas.getContext("2d"), frame.landmarks, canvas.width, canvas.height, replayState.hand);
+  drawFrameLabels(canvas.getContext("2d"), frame, replayState.events, canvas.width);
   $("#replay-range").value = frames.length === 1 ? 0 : safeIndex / (frames.length - 1) * 100;
   $("#replay-time").textContent = `${frame.time.toFixed(2)}s`;
+}
+
+function nearestPhase(time, events) {
+  const list = Object.values(events || {}).filter((event) => Number.isFinite(event.time));
+  if (!list.length) return "阶段未识别";
+  return list.reduce((best, item) => Math.abs(item.time - time) < Math.abs(best.time - time) ? item : best).label;
+}
+
+function drawFrameLabels(context, frame, events, width) {
+  context.fillStyle = "rgba(3,10,15,.78)";
+  context.fillRect(12, 12, Math.min(390, width - 24), 76);
+  context.fillStyle = "#f4f7f8";
+  context.font = `${Math.max(12, width / 55)}px system-ui`;
+  context.textAlign = "left";
+  context.fillText(`${nearestPhase(frame.time, events)} · ${frame.time.toFixed(2)}s`, 24, 38);
+  context.fillStyle = "#9fb3bd";
+  context.font = `${Math.max(10, width / 72)}px system-ui`;
+  const values = [`肘 ${formatMetric(frame.elbowAngle)}`, `膝 ${formatMetric(frame.kneeAngle)}`, `髋 ${formatMetric(frame.hipAngle)}`, `躯干 ${formatMetric(frame.trunkLean)}`];
+  context.fillText(values.join("  "), 24, 67);
+}
+
+function prepareOverlayReplay(summary, hand) {
+  const player = $("#processed-video");
+  const overlay = $("#processed-overlay");
+  const fallback = $("#processed-video-fallback");
+  if (!summary.processedVideo.available || !objectUrl) {
+    player.hidden = true;
+    overlay.hidden = true;
+    fallback.hidden = false;
+    return;
+  }
+  player.hidden = false;
+  overlay.hidden = false;
+  fallback.hidden = true;
+  if (player.src !== objectUrl) player.src = objectUrl;
+  const update = () => {
+    if (!player.videoWidth || !summary.analysisFrames.length) return;
+    overlay.width = player.videoWidth;
+    overlay.height = player.videoHeight;
+    const frame = summary.analysisFrames.reduce((best, item) => Math.abs(item.time - player.currentTime) < Math.abs(best.time - player.currentTime) ? item : best);
+    const context = overlay.getContext("2d");
+    context.clearRect(0, 0, overlay.width, overlay.height);
+    drawPose(context, frame.landmarks, overlay.width, overlay.height, hand, false);
+    drawFrameLabels(context, frame, summary.events, overlay.width);
+  };
+  player.ontimeupdate = update;
+  player.onseeked = update;
+  player.onplay = update;
+  player.currentTime = summary.processedVideo.startTime || 0;
+  update();
+}
+
+function renderDebugData(summary) {
+  const debug = $("#debug-analysis-data");
+  const local = ["localhost", "127.0.0.1"].includes(location.hostname) && new URLSearchParams(location.search).get("debug") === "1";
+  debug.hidden = !local;
+  if (local) $("#debug-analysis-json").textContent = JSON.stringify(summary, (key, value) => key === "landmarks" ? `[${value?.length || 0} landmarks]` : value, 2);
 }
 
 function stopReplay() {
   if (replayAnimation) cancelAnimationFrame(replayAnimation);
   replayAnimation = null;
   const replayButton = $("#replay-button");
-  if (replayButton) replayButton.textContent = "▶ 播放骨架";
+  if (replayButton) replayButton.textContent = "▶ 播放火柴人";
 }
 
 $("#replay-button").addEventListener("click", () => {
@@ -372,7 +466,7 @@ $("#replay-range").addEventListener("input", (event) => {
   if (frames.length) drawReplayFrame(Math.round(Number(event.target.value) / 100 * (frames.length - 1)));
 });
 
-function drawKeyframe(landmarks, hand) {
+function drawKeyframe(frame, hand, events) {
   const canvas = $("#keyframe-canvas");
   const maxWidth = 820;
   const scale = Math.min(1, maxWidth / video.videoWidth);
@@ -380,5 +474,6 @@ function drawKeyframe(landmarks, hand) {
   canvas.height = Math.round(video.videoHeight * scale);
   const context = canvas.getContext("2d");
   context.drawImage(video, 0, 0, canvas.width, canvas.height);
-  drawPose(context, landmarks, canvas.width, canvas.height, hand, false);
+  drawPose(context, frame.landmarks, canvas.width, canvas.height, hand, false);
+  drawFrameLabels(context, frame, events, canvas.width);
 }

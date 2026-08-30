@@ -116,7 +116,54 @@ test("each priority produces a concrete training prescription", () => {
   assert.ok(result.prescriptions.length >= result.priorities.length);
   for (const drill of result.prescriptions) {
     assert.ok(drill.name && drill.purpose && drill.steps && drill.sets && drill.reps && drill.focus);
+    assert.ok(drill.rightFeeling && drill.commonMistakes);
   }
+});
+
+test("analysis result exposes one complete stable schema for every report section", () => {
+  const result = summarizePoseFrames(representativeShot(), "right", {
+    duration: 3.4,
+    sourceFrames: 102,
+    fileName: "shot_test.mp4",
+  });
+
+  assert.equal(result.schemaVersion, "2.1");
+  for (const key of ["summary", "strengths", "priorities", "nextRep", "metrics", "jointAnalysis", "rhythm", "keyframes", "processedVideo", "skeletonVideo", "charts", "trainingPlan", "confidence", "technicalLimitations", "personalBaseline"]) {
+    assert.ok(key in result, `missing ${key}`);
+  }
+  for (const key of ["strengths", "priorities", "next_rep", "metrics", "joint_analysis", "rhythm", "processed_video", "skeleton_video", "training_plan"]) assert.ok(key in result, `missing validation field ${key}`);
+  assert.equal(result.summary.duration, 3.4);
+  assert.equal(result.summary.sourceFrames, 102);
+  assert.equal(result.summary.shootingHand, "右手");
+  assert.equal(result.summary.fileName, "shot_test.mp4");
+  assert.equal(result.jointAnalysis.length, 5);
+  assert.equal(result.rhythm.events.length, 5);
+  assert.equal(result.processedVideo.available, true);
+  assert.equal(result.skeletonVideo.available, true);
+  assert.ok(result.keyframes.length >= 1);
+  assert.ok(result.strengths.length <= 4);
+  assert.ok(result.strengths.length >= 2);
+  assert.ok(result.keep.length > 0);
+  assert.ok(result.why.length > 0);
+});
+
+test("unknown source frame count stays unknown instead of copying sampled frames", () => {
+  const result = summarizePoseFrames(representativeShot(), "right", { duration: 3.4, sourceFrames: null });
+  assert.equal(result.summary.sourceFrames, null);
+  assert.equal(result.summary.sampledFrames, result.totalFrames);
+});
+
+test("low-confidence result keeps the complete schema and explicit fallbacks", () => {
+  const result = summarizePoseFrames([], "left", { duration: 2.5, sourceFrames: 75 });
+
+  assert.equal(result.summary.shootingHand, "左手");
+  assert.equal(result.processedVideo.available, false);
+  assert.equal(result.skeletonVideo.available, false);
+  assert.equal(result.jointAnalysis.length, 5);
+  assert.equal(result.rhythm.events.length, 5);
+  assert.equal(result.confidence.level, "低");
+  assert.ok(result.nextRep[0].includes("重新拍摄"));
+  assert.ok(result.technicalLimitations.length >= 3);
 });
 
 test("low confidence asks for a reshoot instead of precise angle changes", () => {

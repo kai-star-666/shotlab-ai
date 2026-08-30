@@ -189,7 +189,26 @@ function drillFor(joint) {
     rhythm: { name: "一拍连续投篮", purpose: "减少最低点停顿，让下肢和上肢连续衔接", steps: "接球后用口令“下—上”完成一次连续动作；下沉时举球准备，起身后自然出手，中间不额外停球。", sets: "4 组", reps: "每组 6 球", focus: "速度不是越快越好，重点是连续、可重复，录像检查最低点附近是否停顿。" },
     capture: { name: "固定机位复拍", purpose: "提高后续角度和趋势判断可信度", steps: "手机固定在投篮手侧前方约 45°，镜头与腰腹同高，保证脚、头和随挥手全程入镜。", sets: "1 组", reps: "连续拍摄 3 球", focus: "人物高度占画面约 45%–70%，避免逆光和其他人遮挡。" },
   };
-  return drills[joint] || drills.capture;
+  const drill = drills[joint] || drills.capture;
+  const commonMistakes = {
+    elbow: "为了追求伸展而主动锁死肘关节，或辅助手同时把球推出去。",
+    knee: "每次下沉深度不同，最低点停住后再重新起身。",
+    hip: "只把臀部向后坐、胸口明显前扑，球与身体分开启动。",
+    trunk: "刻意挺胸或后仰，落地位置明显越过起跳点。",
+    wrist: "强行向内扭腕，或用低清晰度视频猜测手指拨球。",
+    rhythm: "为了求快省略下沉，或在最低点停球后再二次发力。",
+    capture: "手持跟拍、人物太小、脚或随挥手离开画面。",
+  };
+  const rightFeeling = {
+    elbow: "球、肘和手腕连续向上，出手后手臂自然伸长但不僵硬。",
+    knee: "下沉有弹性，起身像一整段动作，不需要在最低点重新用力。",
+    hip: "身体和球同时上升，力量从脚下连续传到出手手臂。",
+    trunk: "胸口稳定、视线平稳，起跳与落地位置接近。",
+    wrist: "投篮手沿目标方向向上穿过，随挥自然落向篮筐方向。",
+    rhythm: "能清楚感到“下—上”连续衔接，而不是“下—停—投”。",
+    capture: "脚到随挥手全程清晰，人物占画面接近一半且没有遮挡。",
+  };
+  return { ...drill, rightFeeling: rightFeeling[joint] || rightFeeling.capture, commonMistakes: commonMistakes[joint] || commonMistakes.capture };
 }
 
 function reportSection(id, title, currentData, reference, evaluation, good, problem, impact, nextShot, longTerm, confidence) {
@@ -200,11 +219,71 @@ function metricText(value, suffix = "") {
   return Number.isFinite(value) ? `${value}${suffix}` : `—${suffix}`;
 }
 
-function lowConfidenceReport(frames, measured, capture) {
+const TECHNICAL_LIMITATIONS = [
+  "当前是单摄像头二维姿态趋势分析，相机角度、透视和遮挡会影响角度。",
+  "系统只分析手腕二维轨迹，不从姿态点伪造手指拨球、旋转或触球细节。",
+  "单球不能代表长期稳定性；多球结论需要同机位、同距离的连续样本。",
+  "训练参考区间用于比较趋势，不是适用于所有人的标准动作答案。",
+];
+
+function finalizeAnalysisResult(base, shootingHand, context = {}) {
+  const events = Object.values(base.events || {});
+  const usable = Boolean(base.release && base.analysisFrames?.length);
+  const strengths = (base.strengths || []).slice(0, 4);
+  const duration = Number.isFinite(context.duration) ? round(context.duration, 2)
+    : round(base.analysisFrames?.at(-1)?.time ?? base.release?.time ?? 0, 2);
+  const phaseFrames = [
+    [base.loading, "最低点"], [base.release, "出手候选"],
+    [base.analysisFrames?.at(-1), "随挥"],
+  ].filter(([frame], index, rows) => frame && rows.findIndex(([candidate]) => candidate?.time === frame.time) === index)
+    .map(([frame, phase]) => ({ phase, time: round(frame.time, 2), landmarks: frame.landmarks }));
+  const capture = base.capture || {};
+  const priorities = base.priorities || [];
+  return {
+    ...base,
+    schemaVersion: "2.1",
+    summary: {
+      oneLine: capture.confidence === "低" ? "本次拍摄证据不足，先提高机位与入镜质量再判断动作。"
+        : priorities.length ? `本次最优先处理“${priorities[0].title}”，同时保持已经稳定的动作环节。`
+          : "本次没有检测到高优先级问题，下一球重点验证动作能否重复。",
+      duration,
+      sourceFrames: context.sourceFrames !== undefined ? context.sourceFrames : (base.totalFrames ?? 0),
+      sampledFrames: base.totalFrames ?? 0,
+      validPoseFrames: base.validFrames ?? 0,
+      poseDetectionRate: round((base.validRatio || 0) * 100),
+      shootingHand: shootingHand === "left" ? "左手" : "右手",
+      fileName: context.fileName || "当前视频",
+      captureQuality: `${capture.score ?? 0}/100`,
+      confidence: capture.confidence || "低",
+      keyPhasesFound: phaseFrames.map((item) => item.phase),
+    },
+    strengths,
+    keep: strengths.length ? strengths : ["先保持自然动作，不根据低可信度数据强行改姿势。"],
+    why: priorities.length ? priorities.map((item) => `${item.title}：${item.impact}`) : ["当前没有高优先级动作问题，先观察同机位重复性。"],
+    nextRep: base.nextShot || [],
+    next_rep: base.nextShot || [],
+    jointAnalysis: (base.sections || []).filter((section) => section.id !== "rhythm"),
+    joint_analysis: (base.sections || []).filter((section) => section.id !== "rhythm"),
+    rhythm: { events, analysis: (base.sections || []).find((section) => section.id === "rhythm") || null },
+    keyframes: phaseFrames,
+    processedVideo: { available: usable, mode: "original-video-with-live-pose-overlay", startTime: base.analysisFrames?.[0]?.time ?? null, endTime: base.analysisFrames?.at(-1)?.time ?? null },
+    processed_video: { available: usable, mode: "original-video-with-live-pose-overlay" },
+    skeletonVideo: { available: usable, mode: "canvas-stick-figure-replay", frameCount: base.analysisFrames?.length || 0 },
+    skeleton_video: { available: usable, mode: "canvas-stick-figure-replay" },
+    charts: { angleCurves: base.curves || [] },
+    trainingPlan: base.prescriptions || [],
+    training_plan: base.prescriptions || [],
+    confidence: { level: capture.confidence || "低", score: capture.score ?? 0, validFrameRatio: capture.validRatio ?? 0, averageVisibility: capture.averageVisibility ?? 0, bodyScale: capture.bodyScale ?? 0, occlusionRatio: capture.occlusionRatio ?? 1 },
+    personalBaseline: { version: 1, status: "not_enough_samples", minimumShots: 5, samples: [], comparableSetup: ["同一机位", "相近距离", "同一投篮类型"] },
+    technicalLimitations: TECHNICAL_LIMITATIONS,
+  };
+}
+
+function lowConfidenceReport(frames, measured, capture, shootingHand, context) {
   const reshoot = "先重新拍摄：固定手机，从投篮手侧前方约 45° 拍摄，确保脚到随挥手全程入镜。";
   const section = (id, title) => reportSection(id, title, ["当前有效数据不足"], "先保证关键点连续可见，再讨论动作趋势", "本项可信度低", "系统没有在证据不足时强行下动作结论", "遮挡、人物过小或有效帧不足", "具体角度和相对调整量可能被拍摄误差放大", reshoot, "保持固定机位和相似拍摄距离，才能比较多次训练趋势", confidenceNote(capture));
   const priorities = [makeIssue("capture", "先提高拍摄质量", "明显", `有效帧 ${Math.round(capture.validRatio * 100)}%`, "当前数据不足以支持精确动作纠正", reshoot, "低")];
-  return {
+  return finalizeAnalysisResult({
     validFrames: measured.filter((frame) => frame.valid).length, totalFrames: frames.length, validRatio: capture.validRatio, capture,
     ready: null, loading: null, release: null,
     events: { loadingStart: eventAt(null, "下沉开始"), lowest: eventAt(null, "最低点"), riseStart: eventAt(null, "起身"), release: eventAt(null, "出手"), followThrough: eventAt(null, "随挥") },
@@ -212,21 +291,21 @@ function lowConfidenceReport(frames, measured, capture) {
     strengths: ["系统已识别到当前证据不足，没有输出伪精确的动作结论"], priorities, nextShot: [reshoot], dataRows: [],
     sections: [["elbow", "肘关节"], ["knee", "膝关节"], ["hip", "髋关节"], ["trunk", "躯干"], ["wrist", "手腕与出手轨迹"], ["rhythm", "投篮节奏"]].map(([id, title]) => section(id, title)),
     prescriptions: [{ ...drillFor("capture"), forIssue: "拍摄质量不足" }], curves: [], analysisFrames: [], suggestions: [{ title: "建议重新拍摄", detail: reshoot }],
-  };
+  }, shootingHand, context);
 }
 
 function dataRow(metric, current, reference, deviation, evaluation, nextStep, confidence) {
   return { metric, current, reference: `训练参考：${reference}`, deviation, evaluation, nextStep, confidence };
 }
 
-export function summarizePoseFrames(frames, shootingHand = "right") {
+export function summarizePoseFrames(frames, shootingHand = "right", context = {}) {
   const indexes = SIDE[shootingHand] || SIDE.right;
   const measured = frames.map((frame) => frameMetrics(frame, indexes));
   const rawValid = measured.filter((frame) => frame.valid);
   const valid = smoothFrames(rawValid);
   const validRatio = frames.length ? valid.length / frames.length : 0;
   const capture = captureQuality(measured, validRatio);
-  if (!valid.length || capture.confidence === "低") return lowConfidenceReport(frames, measured, capture);
+  if (!valid.length || capture.confidence === "低") return lowConfidenceReport(frames, measured, capture, shootingHand, context);
 
   const { ready, loadingStart, loading, release, followThrough, analysisFrames } = selectPrimaryShot(valid);
   const loadingToRelease = analysisFrames.filter((frame) => frame.time >= loading.time && frame.time <= release.time);
@@ -277,17 +356,14 @@ export function summarizePoseFrames(frames, shootingHand = "right") {
   else if (metrics.kneeRange < 22) issues.push(makeIssue("knee", "下沉幅度偏浅", metrics.kneeRange < 12 ? "明显" : "中等", `本次屈伸幅度 ${metrics.kneeRange}°，最低点膝角 ${metrics.kneeLowest}°`, "下肢储能可能不足，上肢需要承担更多发力", `下一球比当前稍深，尝试增加约 ${metrics.kneeRange < 12 ? "10°–15°" : "5°–10°"} 的相对屈膝幅度，不追求固定角度。`, jointConfidence.knee));
   else issues.push(makeIssue("knee", "下沉幅度可能偏深", "中等", `本次屈伸幅度 ${metrics.kneeRange}°`, "动作时间可能拉长，急停投篮时不易重复", "下一球把下沉幅度比当前减少约 5°–10°，保持起身连续。", jointConfidence.knee));
 
-  if (!Number.isFinite(metrics.hipKneeCoordination)) strengths.push("髋膝关键点已经被捕捉，但当前主动作窗口较短，暂不强判协调程度");
-  else if (metrics.hipKneeCoordination >= 0.35) strengths.push("从当前二维趋势看，髋膝伸展方向较一致，动力链衔接较自然");
-  else issues.push(makeIssue("hip", "髋膝衔接可能不同步", metrics.hipKneeCoordination < 0 ? "中等" : "轻微", `髋膝变化相关系数 ${metrics.hipKneeCoordination}`, "可能出现先起身再举球，或只用上肢补偿的分段感", "下一球只注意一件事：身体起身时让球同时开始向上，不在额前停球。", jointConfidence.hip));
+  if (Number.isFinite(metrics.hipKneeCoordination) && metrics.hipKneeCoordination >= 0.35) strengths.push("从当前二维趋势看，髋膝伸展方向较一致，动力链衔接较自然");
+  else if (Number.isFinite(metrics.hipKneeCoordination)) issues.push(makeIssue("hip", "髋膝衔接可能不同步", metrics.hipKneeCoordination < 0 ? "中等" : "轻微", `髋膝变化相关系数 ${metrics.hipKneeCoordination}`, "可能出现先起身再举球，或只用上肢补偿的分段感", "下一球只注意一件事：身体起身时让球同时开始向上，不在额前停球。", jointConfidence.hip));
 
-  if (jointConfidence.trunk === "低") strengths.push("躯干关键点受人物过小或透视影响，本次不把倾斜数值列为优先纠正项");
-  else if (metrics.trunkMax <= 12 && metrics.trunkDrift <= 10) strengths.push(`躯干画面轴线较稳定（出手倾角 ${metrics.trunkRelease}°）`);
-  else issues.push(makeIssue("trunk", "躯干偏移需要控制", metrics.trunkMax > 20 ? "明显" : metrics.trunkMax > 14 ? "中等" : "轻微", `最大画面倾角 ${metrics.trunkMax}°，出手时 ${metrics.trunkRelease}°`, "可能出现身体扑向篮筐或侧移；单摄像头无法可靠区分真实前倾与相机透视", "下一球保持胸口位于双脚中间上方，出手后检查落地点是否接近起跳点。", jointConfidence.trunk));
+  if (jointConfidence.trunk !== "低" && metrics.trunkMax <= 12 && metrics.trunkDrift <= 10) strengths.push(`躯干画面轴线较稳定（出手倾角 ${metrics.trunkRelease}°）`);
+  else if (jointConfidence.trunk !== "低") issues.push(makeIssue("trunk", "躯干偏移需要控制", metrics.trunkMax > 20 ? "明显" : metrics.trunkMax > 14 ? "中等" : "轻微", `最大画面倾角 ${metrics.trunkMax}°，出手时 ${metrics.trunkRelease}°`, "可能出现身体扑向篮筐或侧移；单摄像头无法可靠区分真实前倾与相机透视", "下一球保持胸口位于双脚中间上方，出手后检查落地点是否接近起跳点。", jointConfidence.trunk));
 
-  if (jointConfidence.wrist === "低") strengths.push("手腕点位已记录，但人物较小或轨迹样本不足，本次不把漂移数值列为优先纠正项");
-  else if (metrics.wristLateralDrift <= 45 && metrics.wristPathStability <= 18) strengths.push("手腕二维随挥路线较集中，方向重复性可以继续保持");
-  else issues.push(makeIssue("wrist", "手腕轨迹存在左右漂移", metrics.wristLateralDrift > 85 ? "明显" : "中等", `横向范围约为上身参考宽度的 ${metrics.wristLateralDrift}%`, "可能使出手方向更依赖临场修正，左右偏差增加", "下一球让手腕沿篮筐方向的竖直参照线向上随挥；不根据本视频判断手指拨球细节。", jointConfidence.wrist));
+  if (jointConfidence.wrist !== "低" && metrics.wristLateralDrift <= 45 && metrics.wristPathStability <= 18) strengths.push("手腕二维随挥路线较集中，方向重复性可以继续保持");
+  else if (jointConfidence.wrist !== "低") issues.push(makeIssue("wrist", "手腕轨迹存在左右漂移", metrics.wristLateralDrift > 85 ? "明显" : "中等", `横向范围约为上身参考宽度的 ${metrics.wristLateralDrift}%`, "可能使出手方向更依赖临场修正，左右偏差增加", "下一球让手腕沿篮筐方向的竖直参照线向上随挥；不根据本视频判断手指拨球细节。", jointConfidence.wrist));
 
   if (metrics.pauseDuration <= 0.12 && metrics.rhythmDuration <= 1.2) strengths.push("下沉到出手的动作基本连续，没有检测到明显长停顿");
   else issues.push(makeIssue("rhythm", "动力链可能存在停顿", metrics.pauseDuration > 0.28 ? "明显" : "中等", `最长近似停顿 ${metrics.pauseDuration}s，下沉至出手 ${metrics.rhythmDuration}s`, "动作可能变成一段一段，上肢需要重新启动发力", "下一球用“下—上”两拍口令，最低点不停住，起身和举球同时发生。", jointConfidence.rhythm));
@@ -368,11 +444,11 @@ export function summarizePoseFrames(frames, shootingHand = "right") {
   }
   const events = { loadingStart: eventAt(loadingStart, "下沉开始"), lowest: eventAt(loading, "最低点"), riseStart: eventAt(loading, "起身"), release: eventAt(release, "出手"), followThrough: eventAt(followThrough, "随挥") };
   const curves = analysisFrames.map((frame) => ({ time: round(frame.time, 2), elbow: round(frame.elbowAngle), knee: round(frame.kneeAngle), hip: round(frame.hipAngle), trunk: round(frame.trunkLean), wristX: round(frame.wristX, 3), wristY: round(frame.wristY, 3) }));
-  return {
+  return finalizeAnalysisResult({
     validFrames: valid.length, totalFrames: frames.length, validRatio, capture, ready, loading, release, events, metrics,
     strengths, priorities, nextShot, dataRows, sections, prescriptions, curves, analysisFrames,
     suggestions: priorities.length ? priorities.map((item) => ({ title: item.title, detail: `${item.evidence}。${item.nextBall}` })) : strengths.slice(0, 3).map((text) => ({ title: "当前保持", detail: text })),
-  };
+  }, shootingHand, context);
 }
 
 export function formatMetric(value, suffix = "°") {
