@@ -1,7 +1,7 @@
 import { formatMetric, summarizePoseFrames } from "/assets/analyzer-core.mjs?v=20260830-1";
 import { analyzeVideoDeterministic, sha256Json } from "/assets/pipeline/video-analyzer.mjs?v=20260830-2";
 import { evaluateIssues, loadIssueKnowledge } from "/assets/coaching/issue-engine.mjs?v=20260830-2";
-import { appendShot, buildSessionSummary, createSession } from "/assets/session/session-coach.mjs?v=20260830-2";
+import { appendShot, buildSessionAnalytics, buildSessionSummary, createSession } from "/assets/session/session-coach.mjs?v=20260830-3";
 import { openSessionStore } from "/assets/session/session-store.mjs?v=20260830-2";
 
 const $ = (selector) => document.querySelector(selector);
@@ -166,7 +166,7 @@ button.addEventListener("click", async () => {
 
 function renderSession() {
   const session = activeSession;
-  $("#session-state").textContent = session ? `进行中 · ${session.shots.length} 球 · ${$("#distance-category").selectedOptions[0].textContent}` : "尚未开始训练";
+  $("#session-state").textContent = session ? `${session.status === "completed" ? "已结束" : "进行中"} · ${session.shots.length} 球 · ${$("#distance-category").selectedOptions[0].textContent}` : "尚未开始训练";
   $("#end-session").disabled = !session || session.shots.length < 2;
   $("#distance-category").disabled = Boolean(session);
   document.querySelectorAll('input[name="hand"]').forEach((item) => { item.disabled = Boolean(session); });
@@ -174,10 +174,14 @@ function renderSession() {
   tabs.replaceChildren(...(session?.shots || []).map((shot) => {
     const tab = makeText("button", shot.shotId === currentShotId ? "active" : "", `Shot ${shot.shotNumber}`);
     tab.type = "button";
-    tab.addEventListener("click", async () => { currentShotId = shot.shotId; await renderResult(shot.analysis, session.shootingHand, { archivedVideo: shot !== session.shots.at(-1) }); renderSession(); renderComparison(shot); });
+    tab.addEventListener("click", async () => { currentShotId = shot.shotId; await renderResult(shot.analysis, session.shootingHand, { archivedVideo: shot !== session.shots.at(-1) }); renderSession(); });
     return tab;
   }));
-  if (session?.shots.length) renderComparison(session.shots.find((shot) => shot.shotId === currentShotId) || session.shots.at(-1));
+  if (session?.shots.length) {
+    const selectedShot = session.shots.find((shot) => shot.shotId === currentShotId) || session.shots.at(-1);
+    renderComparison(selectedShot);
+    renderSessionAnalytics(buildSessionAnalytics(session, selectedShot.shotNumber), session);
+  } else renderSessionAnalytics(null, null);
   $("#session-summary").textContent = session?.sessionSummary?.status === "formal"
     ? `正式总结：${session.baseline?.sampleCount || 0} 球基线已建立；改善最多 ${session.sessionSummary.mostImprovedMetric || "暂未确认"}；有效 cue ${session.sessionSummary.mostEffectiveCue || "继续收集"}；仍需观察 ${session.sessionSummary.stillUnstableMetric || "暂无突出项"}；下次重点 ${session.sessionSummary.nextFocus || "保持稳定动作"}。`
     : session?.shots.length >= 2 ? `暂定总结：已完成 ${session.shots.length} 球，可继续到 5 球建立个人基线。` : "完成至少 2 球后生成训练总结。";
@@ -189,8 +193,94 @@ function renderComparison(shot) {
   if (!shot.comparison.comparable) { target.textContent = `本球不做强对比：${shot.comparison.reason}`; return; }
   const labels = { improved: "改善", stable: "稳定", worsened: "退步", overcorrected: "纠正过头", not_comparable: "不可比" };
   const rows = Object.entries(shot.comparison.metrics).filter(([, item]) => Number.isFinite(item.delta) && item.status !== "stable").slice(0, 4);
-  target.replaceChildren(...rows.map(([key, item]) => makeText("span", `comparison-${item.status}`, `${key} ${item.delta > 0 ? "+" : ""}${item.delta.toFixed(1)} · ${labels[item.status]}`)));
-  if (!rows.length) target.textContent = "与上一球相比，核心指标保持稳定。";
+  target.replaceChildren(...rows.map(([key, item]) => makeText("span", `comparison-${item.status}`, `与第 ${shot.shotNumber - 1} 球比 · ${key} ${item.delta > 0 ? "+" : ""}${item.delta.toFixed(1)} · ${labels[item.status]}`)));
+  if (!rows.length) target.textContent = `与第 ${shot.shotNumber - 1} 球相比，核心指标保持稳定。`;
+}
+
+function renderSessionAnalytics(analytics, session) {
+  const comparisonTarget = $("#history-comparison-grid");
+  const improvementTarget = $("#improvement-summary");
+  const problemTarget = $("#new-problem-list");
+  const maintainTarget = $("#session-maintain-list");
+  const bestTarget = $("#best-shot-card");
+  const historyHead = $("#history-table-head");
+  const historyBody = $("#history-table-body");
+  const trendTarget = $("#history-trend-list");
+  const adjustmentBody = $("#adjustment-table-body");
+  const trainingBody = $("#training-table-body");
+  const finalTarget = $("#session-final-summary");
+  if (!analytics || !session) {
+    comparisonTarget.replaceChildren(makeText("p", "empty-note", "上传第一球后开始建立历史参照。"));
+    improvementTarget.replaceChildren(makeText("p", "empty-note", "完成下一球后判断改善。"));
+    problemTarget.replaceChildren(makeText("p", "empty-note", "当前没有历史球可用于识别新问题。"));
+    maintainTarget.replaceChildren(makeText("p", "empty-note", "完成分析后显示保持项。"));
+    bestTarget.textContent = "完成至少一球后评估本轮最佳参考球。";
+    historyHead.replaceChildren(); historyBody.replaceChildren(); trendTarget.replaceChildren(); adjustmentBody.replaceChildren(); trainingBody.replaceChildren();
+    finalTarget.hidden = true; finalTarget.replaceChildren();
+    return;
+  }
+
+  const layerNames = { previous: "和上一球相比", first: "和第 1 球相比", sessionAverage: "和此前 Session 平均相比", best: "和当前最佳球相比" };
+  const statusNames = { improved: "改善", stable: "稳定", worsened: "退步", overcorrected: "纠正过头", not_comparable: "不可比" };
+  const metricLabels = Object.fromEntries(analytics.historyRows.map((row) => [row.key, row.label]));
+  comparisonTarget.replaceChildren(...Object.entries(analytics.comparisons).map(([key, layer]) => {
+    const card = document.createElement("article"); card.className = "history-comparison-card";
+    const reference = layer.referenceShotNumber ? ` · Shot ${layer.referenceShotNumber}` : "";
+    card.append(makeText("small", "", `${layerNames[key]}${reference}`));
+    if (!layer.comparable) {
+      card.append(makeText("strong", "", "暂不可比"), makeText("p", "", layer.reason)); return card;
+    }
+    const changed = Object.entries(layer.metrics).filter(([, item]) => Number.isFinite(item.delta)).toSorted((a, b) => (a[1].status === "stable") - (b[1].status === "stable")).slice(0, 2);
+    card.append(makeText("strong", "", changed.some(([, item]) => item.status === "improved") ? "检测到改善" : "以稳定为主"));
+    card.append(makeText("p", "", changed.map(([metric, item]) => `${metricLabels[metric] || metric} ${item.delta > 0 ? "+" : ""}${item.delta.toFixed(item.tolerance < 1 ? 2 : 1)} · ${statusNames[item.status]}`).join("；") || "暂无可靠数值"));
+    return card;
+  }));
+
+  const fillList = (target, items, fallback) => target.replaceChildren(...(items.length ? items.map((item) => makeText("p", "", typeof item === "string" ? item : item.text)) : [makeText("p", "empty-note", fallback)]));
+  fillList(improvementTarget, analytics.improvements, analytics.currentShotNumber === 1 ? "这是本次训练基准球。" : "当前没有达到容差以上的明确改善。" );
+  fillList(problemTarget, analytics.newProblems, "这一球没有检测到新的高优先级问题。" );
+  fillList(maintainTarget, analytics.maintain, "当前没有足够证据生成保持项。" );
+
+  bestTarget.replaceChildren(makeText("strong", "", `Shot ${analytics.bestShot.shotNumber} · 当前最佳参考球`), document.createTextNode(`　${analytics.bestShot.explanation}`));
+
+  const shotNumbers = analytics.historyRows[0]?.values.map((item) => item.shotNumber) || [];
+  const headerRow = document.createElement("tr");
+  headerRow.append(makeText("th", "", "指标"), ...shotNumbers.map((number) => makeText("th", "", `Shot ${number}`)), makeText("th", "", "趋势"));
+  historyHead.replaceChildren(headerRow);
+  const trendNames = { IMPROVING: "持续改善", STABLE: "基本稳定", WORSENING: "有所退步", INCONSISTENT: "波动较大", UNCERTAIN: "数据不足" };
+  historyBody.replaceChildren(...analytics.historyRows.map((row) => {
+    const tr = document.createElement("tr"); tr.append(makeText("td", "", row.label));
+    tr.append(...row.values.map((item) => makeText("td", item.confidence === "低" ? "low-confidence-value" : "", Number.isFinite(item.value) ? `${item.value.toFixed(row.unit === "s" ? 2 : 1)}${row.unit}` : "—")));
+    tr.append(makeText("td", `trend-${row.trend}`, trendNames[row.trend])); return tr;
+  }));
+  trendTarget.replaceChildren(...analytics.historyRows.slice(0, 6).map((row) => {
+    const card = document.createElement("article"); card.className = "trend-card";
+    card.append(makeText("b", "", row.label), makeText("span", `trend-${row.trend}`, trendNames[row.trend]));
+    const spark = document.createElement("div"); spark.className = "trend-spark";
+    const numeric = row.values.map((item) => item.value).filter(Number.isFinite); const min = Math.min(...numeric); const max = Math.max(...numeric); const span = Math.max(max - min, row.tolerance || 1);
+    spark.append(...row.values.map((item) => { const bar = document.createElement("i"); bar.style.height = Number.isFinite(item.value) ? `${20 + (item.value - min) / span * 80}%` : "4%"; bar.title = `Shot ${item.shotNumber}: ${Number.isFinite(item.value) ? item.value : "—"}`; return bar; }));
+    card.append(spark); return card;
+  }));
+
+  adjustmentBody.replaceChildren(...analytics.adjustmentRows.map((row) => {
+    const tr = document.createElement("tr");
+    for (const value of [row.priority, row.part, row.performance, row.current, row.target, row.direction, row.cue, row.hint]) tr.append(makeText("td", "", value));
+    return tr;
+  }));
+  trainingBody.replaceChildren(...(analytics.trainingRows.length ? analytics.trainingRows : [{ name: "动作复现", issue: "当前没有突出问题", method: "同机位再投一球，复现当前动作。", volume: "3组 × 5球", focus: "保持距离、机位和节奏一致" }]).map((row) => {
+    const tr = document.createElement("tr");
+    for (const value of [row.name, row.issue, row.method, row.volume, row.focus]) tr.append(makeText("td", "", value || "—"));
+    return tr;
+  }));
+
+  const summary = session.sessionSummary;
+  finalTarget.hidden = session.status !== "completed" || !summary || summary.status === "insufficient";
+  if (!finalTarget.hidden) {
+    const changes = (summary.fromFirstToLast || []).filter((item) => ["improved", "stable", "worsened", "overcorrected"].includes(item.status)).slice(0, 5);
+    const list = document.createElement("ul");
+    list.append(...changes.map((item) => makeText("li", "", `${item.label}：Shot 1 ${item.first.toFixed(item.unit === "s" ? 2 : 1)}${item.unit} → Shot ${summary.shotCount} ${item.last.toFixed(item.unit === "s" ? 2 : 1)}${item.unit}（${statusNames[item.status]}）`)));
+    finalTarget.replaceChildren(makeText("h4", "", `本次训练总结 · ${summary.shotCount} 球`), makeText("p", "", `当前最佳参考球：Shot ${summary.bestShot?.shotNumber || "—"}。下一次只关注：${(summary.nextFocuses || []).join("、") || "保持当前稳定动作"}。`), list);
+  }
 }
 
 $("#new-session").addEventListener("click", () => {
@@ -226,6 +316,10 @@ async function initializeSession() {
     message.textContent = `已恢复本机训练（${activeSession.shots.length} 球）。旧视频未长期保存，可继续上传下一球。`;
   }
   renderSession();
+  if (activeSession?.shots.length) {
+    await renderResult(activeSession.shots.at(-1).analysis, activeSession.shootingHand, { archivedVideo: true });
+    renderSession();
+  }
 }
 
 initializeSession().catch((error) => { console.error(error); message.textContent = `训练数据初始化失败：${error.message}`; });

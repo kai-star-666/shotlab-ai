@@ -1,4 +1,4 @@
-# ShotLab AI Architecture V3
+# ShotLab AI Architecture V3.1
 
 ## 三个确定性边界
 
@@ -25,9 +25,13 @@ severityWeight × confidenceWeight × coachingPriority
 
 ## Training Session
 
-`TrainingSessionV1` 锁定投篮手与距离类别；`ShotV1` 保存数据、问题代码、比较、cue 和 320px JPEG 缩略图。IndexedDB 最多保存 30 个 Session，原视频只保留当前页面 Blob URL。
+`TrainingSessionV1` 锁定投篮手与距离类别；`ShotV1` 保存标准化 `record`、分析结果、问题代码、cue、历史比较和 320px JPEG 缩略图。IndexedDB 最多保存 30 个 Session，原视频只保留当前页面 Blob URL。
 
-第二球按角度 2°、节奏 0.05 秒、手腕上身参考宽度 5% 容差比较。低可信度、配置不同或人物尺度变化超过 25% 时返回 `not_comparable`。进入参考区间后 cue 转为保持，越过区间则标记 `overcorrected`。第 5 个中高可信度样本建立中位数/IQR Baseline。
+每个新 Shot 生成四个确定性比较层：`previous`、`first`、`sessionAverage` 和 `best`。历史趋势只使用中/高可信度样本，统一输出 `IMPROVING / STABLE / WORSENING / INCONSISTENT / UNCERTAIN`。Best Shot 按可信度、拍摄质量、问题惩罚、优点数量和多个训练区间综合评分，同分固定选择较早的 Shot。
+
+个体目标区间采用渐进策略：区间外每球只推进一个固定步长，进入区间后收缩为当前值附近的保持带；五球 Baseline 建立后优先使用知识区间与个人稳定区间的有效交集。比较越过目标区间时标记 `overcorrected`，上一球没有 Priority 时保留当前确定性 cue，不允许产生空建议。
+
+角度按 2°、节奏按 0.05 秒、手腕上身参考宽度按 5% 容差比较。低可信度、配置不同或人物尺度变化超过 25% 时返回 `not_comparable`。第 5 个中高可信度样本建立中位数/IQR Baseline。
 
 ## 隐私与部署
 

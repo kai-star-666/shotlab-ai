@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="/assets/coach-report.css?v=20260830-1">
   <link rel="stylesheet" href="/assets/coach-report-responsive.css?v=20260830-1">
   <link rel="stylesheet" href="/assets/report-v21.css?v=20260830-1">
-  <link rel="stylesheet" href="/assets/session-v3.css?v=20260830-2">
+  <link rel="stylesheet" href="/assets/session-v3.css?v=20260830-3">
 </head>
 <body>
   <header class="nav shell">
@@ -102,7 +102,29 @@
               <div class="block-heading"><span>S</span><div><small>SESSION COACHING LOOP</small><h3>连续训练进度</h3></div></div>
               <div id="shot-tabs" class="shot-tabs"></div>
               <div id="shot-comparison" class="shot-comparison">完成下一球后，这里会显示与上一球的变化。</div>
+              <h4 class="session-subtitle">本球与历史投篮对比</h4>
+              <div id="history-comparison-grid" class="history-comparison-grid"></div>
+
+              <div class="session-insight-grid">
+                <div><h4>相比前面，这一球进步了什么</h4><div id="improvement-summary" class="session-list"></div></div>
+                <div><h4>这一球同时出现的新问题</h4><div id="new-problem-list" class="session-list"></div></div>
+                <div><h4>这一球请保持</h4><div id="session-maintain-list" class="session-list"></div></div>
+              </div>
+
+              <div id="best-shot-card" class="best-shot-card">完成至少一球后评估本轮最佳参考球。</div>
+
+              <h4 class="session-subtitle">本次训练历史指标</h4>
+              <div class="table-scroll history-table-scroll"><table class="data-table session-history-table"><thead id="history-table-head"></thead><tbody id="history-table-body"></tbody></table></div>
+              <div id="history-trend-list" class="history-trend-list"></div>
+
+              <h4 class="session-subtitle">详细动作调整表</h4>
+              <div class="table-scroll"><table class="data-table adjustment-table"><thead><tr><th>优先级</th><th>部位 / 环节</th><th>当前表现</th><th>当前实测</th><th>个体目标</th><th>调整方向</th><th>下一球尝试</th><th>训练提示</th></tr></thead><tbody id="adjustment-table-body"></tbody></table></div>
+
+              <h4 class="session-subtitle">本球训练计划表</h4>
+              <div class="table-scroll"><table class="data-table training-plan-table"><thead><tr><th>训练</th><th>解决问题</th><th>方法</th><th>训练量</th><th>注意点</th></tr></thead><tbody id="training-table-body"></tbody></table></div>
+
               <p id="session-summary" class="session-summary">完成至少 2 球后生成训练总结。</p>
+              <div id="session-final-summary" class="session-final-summary" hidden></div>
             </section>
             <section class="report-block report-summary">
               <div class="block-heading"><span>01</span><div><small>ANALYSIS SUMMARY</small><h3>本次分析总结</h3></div></div>
@@ -222,6 +244,6 @@
   </main>
 
   <footer class="shell"><span>SHOTLAB AI · 2026</span><span>Built for better shooting decisions.</span></footer>
-  <script type="module" src="/assets/analyzer-app.mjs?v=20260830-2"></script>
+  <script type="module" src="/assets/analyzer-app.mjs?v=20260830-3"></script>
 </body>
 </html>

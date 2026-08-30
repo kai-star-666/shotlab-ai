@@ -2,17 +2,20 @@
 
 ## 当前版本
 
-技术版本 V3.0，已完成产品路线 V0.3 Stability、V0.4 Training Session 和 V0.5 Personal Baseline 的 MVP。代码、本地验收和 Netlify 公网回归均已完成。
+技术版本 V3.1，已完成产品路线 V0.3 Stability、V0.4+ Continuous Training Session 和 V0.5 Personal Baseline 的浏览器 MVP。本地单元测试、五球 Session 验收和 Netlify 公网五球回归均已完成。
 
 ## 已完成
 
 - 每球独立 CPU 模型、固定帧时间、关键点清洗/插值/SG 滤波和确定性阶段识别；
 - 带 issueCode、deadband、可信度门槛、固定排序和训练映射的知识库；
-- 连续 Shot 切换、上一球比较、过度纠正保护、≥5 球个人 Baseline；
+- 连续 Shot 切换，与上一球、第 1 球、Session 平均和 Best Shot 四层比较；
+- 五种历史趋势、进步/新问题/保持摘要、详细动作调整表和训练计划表；
+- 渐进个体目标、进入区间后保持、过度纠正保护、≥5 球个人 Baseline；
 - IndexedDB 恢复、最多 30 个 Session、本机清理与结束训练；
 - 原视频不长期保存，关键帧/真人骨架移入高级分析，火柴人保留主流程；
 - 10 次重复性报告、低质量降级、桌面/390px 移动端测试；
-- 原有 47 项 Python 测试和扩展后的 24 项 JavaScript 测试通过。
+- 原有 47 项 Python 测试和扩展后的 32 项 JavaScript 测试通过。
+- 390px 视口连续五文件上传、Shot 1–5 切换、刷新恢复、结束总结和 IndexedDB 脱敏持久化通过。
 
 ## 浏览器验收边界
 
@@ -35,4 +38,4 @@
 
 ## 当前唯一下一阶段
 
-暂不开发球星匹配或大型模型。先完成真实 iPhone Safari / 微信内置浏览器验收，并用 10–30 名篮球爱好者开展小范围测试，重点记录不同拍摄条件下的失败率、低质量拒绝是否正确、Issue 方向是否得到人工认可，以及 cue 后下一球是否真实改善。详细门槛见 `ROADMAP.md`。
+暂不开发球星匹配或大型模型。先收集至少五段真实、可比的不同投篮动作视频完成多球改善回归，再完成真实 iPhone Safari / 微信内置浏览器验收，并用 10–30 名篮球爱好者开展小范围测试。详细门槛见 `ROADMAP.md`。
