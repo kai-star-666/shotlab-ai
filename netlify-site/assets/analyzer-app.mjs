@@ -1,5 +1,5 @@
-import { formatMetric, summarizePoseFrames } from "/assets/analyzer-core.mjs?v=20260830-1";
-import { analyzeVideoDeterministic, sha256Json } from "/assets/pipeline/video-analyzer.mjs?v=20260830-2";
+import { formatMetric, summarizePoseFrames } from "/assets/analyzer-core.mjs?v=20260830-2";
+import { analyzeVideoDeterministic, sha256Json } from "/assets/pipeline/video-analyzer.mjs?v=20260830-3";
 import { evaluateIssues, loadIssueKnowledge } from "/assets/coaching/issue-engine.mjs?v=20260830-2";
 import { appendShot, buildSessionAnalytics, buildSessionSummary, createSession } from "/assets/session/session-coach.mjs?v=20260830-3";
 import { openSessionStore } from "/assets/session/session-store.mjs?v=20260830-2";
@@ -64,6 +64,17 @@ const issueCopy = {
 function applyStableIssues(summary) {
   const confidence = summary.capture.confidence;
   const confidences = Object.fromEntries(Object.keys(summary.metrics).map((key) => [key, confidence]));
+  const groups = {
+    elbow: ["elbowRelease", "elbowMin", "elbowRange", "elbowExtensionTrend", "elbowInstability"],
+    knee: ["kneeLowest", "kneeRange", "kneeRiseDuration"],
+    hip: ["hipLowest", "hipRange", "hipKneeCoordination"],
+    trunk: ["trunkMax", "trunkRelease", "trunkDrift"],
+    wrist: ["wristRise", "wristLateralDrift", "wristPathStability"],
+    rhythm: ["pauseDuration", "rhythmDuration"],
+  };
+  for (const [joint, keys] of Object.entries(groups)) {
+    for (const key of keys) if (key in confidences) confidences[key] = summary.jointConfidence?.[joint] || confidence;
+  }
   if (summary.capture.bodyScale < 0.18) {
     for (const key of ["trunkMax", "trunkRelease", "trunkDrift", "wristPathStability", "wristLateralDrift", "wristRise"]) confidences[key] = "低";
   }
@@ -135,7 +146,7 @@ button.addEventListener("click", async () => {
     });
     let summary = summarizePoseFrames(pipeline.frames, hand, {
       duration: pipeline.durationMs / 1000, sourceFrames: null, fileName: selectedFile?.name || "当前视频",
-      rawFrames: pipeline.rawFrames, preprocessed: true,
+      rawFrames: pipeline.rawFrames, preprocessed: true, orientationPass: pipeline.orientationPass, orientationScores: pipeline.orientationScores,
     });
     summary.pipeline = { ...pipeline.manifest, canvasSize: pipeline.canvasSize, hashes: pipeline.hashes };
     summary.phasesHash = await sha256Json(summary.events);
@@ -337,8 +348,8 @@ async function renderResult(summary, hand, { archivedVideo = false } = {}) {
   $("#metric-trunk").textContent = formatMetric(summary.metrics.trunkRelease);
   $("#analysis-summary-text").textContent = summary.capture.confidence === "低"
     ? `本次综合识别质量 ${percent}/100，有效帧 ${Math.round(summary.validRatio * 100)}%。当前证据不足，系统已停止输出精确动作纠正。`
-    : `本次综合识别质量 ${percent}/100，共分析 ${summary.totalFrames} 个时间点，其中 ${summary.validFrames} 帧可用于动作判断。平均关键点可见度 ${Math.round(summary.capture.averageVisibility * 100)}%，人物高度约占画面 ${Math.round(summary.capture.bodyScale * 100)}%。以下结论优先基于相对幅度、变化趋势和动作连续性。`;
-  renderSummaryFacts(summary.summary);
+    : `本次综合识别质量 ${percent}/100，共分析 ${summary.totalFrames} 个时间点，其中 ${summary.validFrames} 帧可用于动作判断。系统判断为${summary.capture.viewpoint?.label || "未知视角"}。${summary.capture.shootingArmOccluded ? "投篮手位于画面远侧，阶段与节奏可用，肘腕精细指标已降级。" : "以下结论优先基于相对幅度、变化趋势和动作连续性。"}`;
+  renderSummaryFacts(summary.summary, summary.capture);
 
   const strengths = summary.strengths.length ? summary.strengths : ["当前没有足够证据判断动作优点，请先提高拍摄质量。"];
   $("#strength-list").replaceChildren(...strengths.map((text) => makeCard("✓", "继续保持", text, "strength-card")));
@@ -382,12 +393,15 @@ async function renderResult(summary, hand, { archivedVideo = false } = {}) {
   $("#result-panel").classList.remove("empty");
 }
 
-function renderSummaryFacts(summary) {
+function renderSummaryFacts(summary, capture = {}) {
   const facts = [
     ["文件", summary.fileName], ["时长", `${summary.duration.toFixed(2)}s`],
     ["源总帧", summary.sourceFrames ?? "—（浏览器未提供）"], ["采样点", summary.sampledFrames],
     ["有效姿态帧", summary.validPoseFrames], ["检测率", `${summary.poseDetectionRate}%`],
-    ["投篮手", summary.shootingHand], ["关键阶段", summary.keyPhasesFound.length ? summary.keyPhasesFound.join(" / ") : "未稳定识别"],
+    ["投篮手", summary.shootingHand], ["自动视角", capture.viewpoint?.label || "未稳定判断"],
+    ["分析侧", capture.shootingArmOccluded ? "可见侧代理阶段（投篮臂精细指标降级）" : "投篮侧"],
+    ["方向校正", capture.orientationPass === "mirrored-normalized" ? "已自动镜像校正" : "原方向通过"],
+    ["关键阶段", summary.keyPhasesFound.length ? summary.keyPhasesFound.join(" / ") : "未稳定识别"],
   ];
   $("#summary-facts").replaceChildren(...facts.map(([label, value]) => {
     const item = document.createElement("div");

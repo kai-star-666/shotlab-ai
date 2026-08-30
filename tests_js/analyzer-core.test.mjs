@@ -33,6 +33,27 @@ function representativeShot(visibility = 0.96) {
   ];
 }
 
+function withCameraSideOcclusion(frames, shootingHand = "right") {
+  const farSide = shootingHand === "right" ? [12, 14, 16, 24, 26, 28] : [11, 13, 15, 23, 25, 27];
+  const nearLeg = shootingHand === "right" ? [23, 25, 27] : [24, 26, 28];
+  return frames.map((frame) => {
+    const landmarks = frame.landmarks.map((point) => ({ ...point }));
+    const sourceArm = shootingHand === "right" ? [12, 14, 16] : [11, 13, 15];
+    const visibleArm = shootingHand === "right" ? [11, 13, 15] : [12, 14, 16];
+    const sourceLeg = shootingHand === "right" ? [24, 26, 28] : [23, 25, 27];
+    for (let index = 0; index < visibleArm.length; index += 1) {
+      const source = landmarks[sourceArm[index]];
+      landmarks[visibleArm[index]] = { ...source, x: 1 - source.x, visibility: 0.96 };
+    }
+    for (let index = 0; index < nearLeg.length; index += 1) {
+      const source = landmarks[sourceLeg[index]];
+      landmarks[nearLeg[index]] = { ...source, x: 1 - source.x, visibility: 0.96 };
+    }
+    for (const index of farSide) landmarks[index] = { ...landmarks[index], visibility: 0.3 };
+    return { ...frame, landmarks };
+  });
+}
+
 test("calculateAngle returns a right angle", () => {
   assert.equal(Math.round(calculateAngle({ x: 1, y: 0 }, { x: 0, y: 0 }, { x: 0, y: 1 })), 90);
 });
@@ -194,4 +215,50 @@ test("rhythm analysis selects one primary shot instead of spanning repeated atte
 
   assert.ok(result.metrics.rhythmDuration < 1.5);
   assert.ok(result.analysisFrames.at(-1).time - result.analysisFrames[0].time < 1.8);
+});
+
+test("opposite-side camera occlusion still detects the shot using the visible body side", () => {
+  const frames = withCameraSideOcclusion(representativeShot(), "right");
+  const result = summarizePoseFrames(frames, "right");
+
+  assert.notEqual(result.capture.confidence, "低");
+  assert.ok(result.release, "release should still be detected");
+  assert.equal(result.capture.analysisSides.arm, "left");
+  assert.equal(result.capture.analysisSides.body, "left");
+  assert.equal(result.capture.shootingArmOccluded, true);
+  assert.equal(result.jointConfidence.elbow, "低");
+  assert.ok(result.priorities.every((issue) => issue.confidence !== "低"));
+});
+
+test("front or rear camera view remains analyzable but does not make strong sagittal angle claims", () => {
+  const frames = representativeShot().map((frame) => {
+    const landmarks = frame.landmarks.map((point) => ({ ...point }));
+    landmarks[11] = { ...landmarks[11], x: 0.28 };
+    landmarks[12] = { ...landmarks[12], x: 0.72 };
+    landmarks[23] = { ...landmarks[23], x: 0.38 };
+    landmarks[24] = { ...landmarks[24], x: 0.62 };
+    return { ...frame, landmarks };
+  });
+  const result = summarizePoseFrames(frames, "right");
+
+  assert.ok(result.release, "front/rear view should still detect a release");
+  assert.equal(result.capture.viewpoint.category, "front_or_rear");
+  assert.equal(result.jointConfidence.knee, "低");
+  assert.equal(result.jointConfidence.hip, "低");
+  assert.ok(result.priorities.every((issue) => !["knee", "hip", "trunk"].includes(issue.joint)));
+});
+
+test("missing ankles do not block phase detection and knee angles are downgraded", () => {
+  const frames = representativeShot().map((frame) => {
+    const landmarks = frame.landmarks.map((point) => ({ ...point }));
+    landmarks[27] = null;
+    landmarks[28] = null;
+    return { ...frame, landmarks };
+  });
+  const result = summarizePoseFrames(frames, "right");
+
+  assert.ok(result.release, "release should use hip-knee motion when ankles are outside the frame");
+  assert.equal(result.jointConfidence.knee, "低");
+  assert.equal(result.metrics.kneeLowest, null);
+  assert.ok(result.priorities.every((issue) => issue.joint !== "knee"));
 });

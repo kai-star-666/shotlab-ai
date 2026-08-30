@@ -62,37 +62,109 @@ function pointDistance(a, b) {
   return a && b ? Math.hypot(a.x - b.x, a.y - b.y) : Number.NaN;
 }
 
-function frameMetrics(frame, indexes) {
+const OTHER_SIDE = { left: "right", right: "left" };
+const ARM_KEYS = ["shoulder", "elbow", "wrist"];
+const BODY_KEYS = ["hip", "knee", "ankle"];
+const PHASE_BODY_KEYS = ["hip", "knee"];
+const visiblePoint = (point, threshold = 0.45) => Boolean(point && (point.visibility ?? 1) >= threshold);
+
+function chainCoverage(frames, side, keys) {
+  if (!frames.length) return 0;
+  const indexes = SIDE[side];
+  return frames.filter((frame) => keys.every((key) => visiblePoint(frame.landmarks?.[indexes[key]]))).length / frames.length;
+}
+
+function chooseVisibleSide(frames, preferred, keys) {
+  const alternate = OTHER_SIDE[preferred];
+  const preferredCoverage = chainCoverage(frames, preferred, keys);
+  const alternateCoverage = chainCoverage(frames, alternate, keys);
+  const side = preferredCoverage >= 0.5 || preferredCoverage >= alternateCoverage - 0.12 ? preferred : alternate;
+  return { side, coverage: side === preferred ? preferredCoverage : alternateCoverage, preferredCoverage, alternateCoverage };
+}
+
+function selectAnalysisSides(frames, shootingHand) {
+  const preferred = SIDE[shootingHand] ? shootingHand : "right";
+  const arm = chooseVisibleSide(frames, preferred, ARM_KEYS);
+  const body = chooseVisibleSide(frames, preferred, PHASE_BODY_KEYS);
+  const fullBodyCoverage = chainCoverage(frames, body.side, BODY_KEYS);
+  return {
+    arm: arm.side,
+    body: body.side,
+    shooting: preferred,
+    shootingArmOccluded: arm.side !== preferred,
+    coverage: { arm: round(arm.coverage, 2), body: round(body.coverage, 2), fullBody: round(fullBodyCoverage, 2), shootingArm: round(arm.preferredCoverage, 2) },
+  };
+}
+
+function midpointOrSingle(a, b, fallback) {
+  const visible = [a, b].filter((point) => visiblePoint(point));
+  if (visible.length === 2) return { x: (visible[0].x + visible[1].x) / 2, y: (visible[0].y + visible[1].y) / 2 };
+  return visible[0] || fallback || null;
+}
+
+function estimateViewpoint(frames) {
+  const ratios = [];
+  for (const frame of frames) {
+    const p = frame.landmarks || [];
+    if (![p[11], p[12], p[23], p[24]].every((point) => visiblePoint(point))) continue;
+    const shoulderCenter = midpointOrSingle(p[11], p[12]);
+    const hipCenter = midpointOrSingle(p[23], p[24]);
+    const torsoLength = pointDistance(shoulderCenter, hipCenter);
+    if (torsoLength > 0.04) ratios.push(pointDistance(p[11], p[12]) / torsoLength);
+  }
+  const ratio = median(ratios);
+  if (!Number.isFinite(ratio)) return { category: "unknown", label: "视角未能稳定判断", confidence: "低", shoulderToTorsoRatio: null };
+  if (ratio >= 0.8) return { category: "front_or_rear", label: "正面或背面视角", confidence: ratios.length >= 3 ? "高" : "中", shoulderToTorsoRatio: round(ratio, 2) };
+  if (ratio <= 0.35) return { category: "side", label: "侧面视角", confidence: ratios.length >= 3 ? "高" : "中", shoulderToTorsoRatio: round(ratio, 2) };
+  return { category: "diagonal", label: "斜侧视角", confidence: ratios.length >= 3 ? "中" : "低", shoulderToTorsoRatio: round(ratio, 2) };
+}
+
+function frameMetrics(frame, selection) {
   const p = frame.landmarks;
-  const required = Object.values(indexes).map((index) => p[index]);
+  const armIndexes = SIDE[selection.arm];
+  const bodyIndexes = SIDE[selection.body];
+  const shootingIndexes = SIDE[selection.shooting];
+  const requiredIndexes = [...ARM_KEYS.map((key) => armIndexes[key]), ...PHASE_BODY_KEYS.map((key) => bodyIndexes[key])];
+  const required = requiredIndexes.map((index) => p[index]);
   const visibilityValues = required.map((point) => point?.visibility ?? 0);
   const averageVisibility = mean(visibilityValues);
-  const visible = required.every((point) => point && (point.visibility ?? 1) >= 0.45);
-  const visiblePoints = p.filter((point) => point && (point.visibility ?? 1) >= 0.45);
+  const visible = required.every((point) => visiblePoint(point));
+  const visiblePoints = p.filter((point) => visiblePoint(point));
   const bodyScale = visiblePoints.length ? Math.max(...visiblePoints.map((point) => point.y)) - Math.min(...visiblePoints.map((point) => point.y)) : 0;
   if (!visible) return { ...frame, valid: false, averageVisibility, bodyScale };
 
-  const shoulder = p[indexes.shoulder];
-  const elbow = p[indexes.elbow];
-  const wrist = p[indexes.wrist];
-  const hip = p[indexes.hip];
-  const knee = p[indexes.knee];
-  const ankle = p[indexes.ankle];
-  const shoulderCenter = { x: (p[11].x + p[12].x) / 2, y: (p[11].y + p[12].y) / 2 };
-  const hipCenter = { x: (p[23].x + p[24].x) / 2, y: (p[23].y + p[24].y) / 2 };
+  const shoulder = p[armIndexes.shoulder];
+  const elbow = p[armIndexes.elbow];
+  const wrist = p[armIndexes.wrist];
+  const hip = p[bodyIndexes.hip];
+  const knee = p[bodyIndexes.knee];
+  const ankle = p[bodyIndexes.ankle];
+  const shoulderCenter = midpointOrSingle(p[11], p[12], shoulder);
+  const hipCenter = midpointOrSingle(p[23], p[24], hip);
+  const bodyShoulder = visiblePoint(p[bodyIndexes.shoulder]) ? p[bodyIndexes.shoulder] : shoulderCenter;
+  const measuredKneeAngle = visiblePoint(ankle) ? calculateAngle(hip, knee, ankle) : Number.NaN;
+  const phaseKneeAngle = Number.isFinite(measuredKneeAngle) ? measuredKneeAngle : calculateAngle(bodyShoulder, hip, knee);
+  const shootingShoulder = p[shootingIndexes.shoulder];
+  const shootingElbow = p[shootingIndexes.elbow];
+  const shootingWrist = p[shootingIndexes.wrist];
+  const shootingArmVisible = [shootingShoulder, shootingElbow, shootingWrist].every((point) => visiblePoint(point));
   return {
     ...frame, valid: true, averageVisibility, bodyScale,
     elbowAngle: calculateAngle(shoulder, elbow, wrist),
-    kneeAngle: calculateAngle(hip, knee, ankle),
-    hipAngle: calculateAngle(shoulder, hip, knee),
+    kneeAngle: phaseKneeAngle,
+    measuredKneeAngle,
+    hipAngle: calculateAngle(bodyShoulder, hip, knee),
     trunkLean: Math.atan2(shoulderCenter.x - hipCenter.x, hipCenter.y - shoulderCenter.y) * 180 / Math.PI,
     torsoLength: pointDistance(shoulderCenter, hipCenter), shoulderWidth: pointDistance(p[11], p[12]),
     wristX: wrist.x, wristY: wrist.y,
+    shootingElbowAngle: shootingArmVisible ? calculateAngle(shootingShoulder, shootingElbow, shootingWrist) : Number.NaN,
+    shootingWristX: shootingArmVisible ? shootingWrist.x : Number.NaN,
+    shootingWristY: shootingArmVisible ? shootingWrist.y : Number.NaN,
   };
 }
 
 function smoothFrames(valid) {
-  const keys = ["elbowAngle", "kneeAngle", "hipAngle", "trunkLean", "wristX", "wristY"];
+  const keys = ["elbowAngle", "kneeAngle", "measuredKneeAngle", "hipAngle", "trunkLean", "wristX", "wristY", "shootingElbowAngle", "shootingWristX", "shootingWristY"];
   return valid.map((frame, index) => {
     if (index === 0 || index === valid.length - 1) return { ...frame };
     const nearby = valid.slice(index - 1, index + 2).filter((candidate) => Math.abs(candidate.time - frame.time) <= 0.5);
@@ -100,7 +172,7 @@ function smoothFrames(valid) {
     for (const key of keys) {
       let samples = nearby.map((candidate) => candidate[key]);
       if (key === "trunkLean") samples = samples.filter((value) => Math.abs(value) <= 60);
-      if (["elbowAngle", "kneeAngle", "hipAngle"].includes(key)) samples = samples.filter((value) => value >= 5 && value <= 179);
+      if (["elbowAngle", "shootingElbowAngle", "kneeAngle", "measuredKneeAngle", "hipAngle"].includes(key)) samples = samples.filter((value) => value >= 5 && value <= 179);
       const value = median(samples);
       if (Number.isFinite(value)) smoothed[key] = value;
     }
@@ -268,7 +340,7 @@ function finalizeAnalysisResult(base, shootingHand, context = {}) {
 }
 
 function lowConfidenceReport(frames, measured, capture, shootingHand, context) {
-  const reshoot = "先重新拍摄：固定手机，从投篮手侧前方约 45° 拍摄，确保脚到随挥手全程入镜。";
+  const reshoot = "先重新拍摄：固定手机并确保脚到随挥手全程入镜；左右侧均可，正面或背面更适合看节奏，不用于强判前后屈伸角。";
   const section = (id, title) => reportSection(id, title, ["当前有效数据不足"], "先保证关键点连续可见，再讨论动作趋势", "本项可信度低", "系统没有在证据不足时强行下动作结论", "遮挡、人物过小或有效帧不足", "具体角度和相对调整量可能被拍摄误差放大", reshoot, "保持固定机位和相似拍摄距离，才能比较多次训练趋势", confidenceNote(capture));
   const priorities = [makeIssue("capture", "先提高拍摄质量", "明显", `有效帧 ${Math.round(capture.validRatio * 100)}%`, "当前数据不足以支持精确动作纠正", reshoot, "低")];
   return finalizeAnalysisResult({
@@ -287,14 +359,23 @@ function dataRow(metric, current, reference, deviation, evaluation, nextStep, co
 }
 
 export function summarizePoseFrames(frames, shootingHand = "right", context = {}) {
-  const indexes = SIDE[shootingHand] || SIDE.right;
-  const measured = frames.map((frame) => frameMetrics(frame, indexes));
+  const sideSelection = selectAnalysisSides(frames, shootingHand);
+  const measured = frames.map((frame) => frameMetrics(frame, sideSelection));
   const rawValid = measured.filter((frame) => frame.valid);
   const valid = context.preprocessed ? rawValid : smoothFrames(rawValid);
   const validRatio = frames.length ? valid.length / frames.length : 0;
-  const confidenceMeasured = context.rawFrames ? context.rawFrames.map((frame) => frameMetrics(frame, indexes)) : measured;
+  const confidenceMeasured = context.rawFrames ? context.rawFrames.map((frame) => frameMetrics(frame, sideSelection)) : measured;
   const rawValidRatio = confidenceMeasured.length ? confidenceMeasured.filter((frame) => frame.valid).length / confidenceMeasured.length : 0;
-  const capture = captureQuality(confidenceMeasured, rawValidRatio);
+  const viewpoint = estimateViewpoint(context.rawFrames || frames);
+  const capture = {
+    ...captureQuality(confidenceMeasured, rawValidRatio),
+    viewpoint,
+    analysisSides: { arm: sideSelection.arm, body: sideSelection.body, shooting: sideSelection.shooting },
+    sideCoverage: sideSelection.coverage,
+    shootingArmOccluded: sideSelection.shootingArmOccluded,
+    orientationPass: context.orientationPass || "original",
+    orientationScores: context.orientationScores || null,
+  };
   if (!valid.length || capture.confidence === "低") return lowConfidenceReport(frames, measured, capture, shootingHand, context);
 
   const { ready, loadingStart, loading, release, followThrough, analysisFrames, phases } = selectPrimaryShot(valid);
@@ -306,53 +387,64 @@ export function summarizePoseFrames(frames, shootingHand = "right", context = {}
   const loadingToRelease = analysisFrames.filter((frame) => frame.time >= loading.time && frame.time <= release.time);
   const values = (key) => analysisFrames.map((frame) => frame[key]).filter(Number.isFinite);
   const elbowDeltas = loadingToRelease.slice(1).map((frame, index) => (frame.elbowAngle - loadingToRelease[index].elbowAngle) / Math.max(0.001, frame.time - loadingToRelease[index].time));
-  const kneeDeltas = loadingToRelease.slice(1).map((frame, index) => frame.kneeAngle - loadingToRelease[index].kneeAngle);
+  const kneeDeltas = loadingToRelease.slice(1).map((frame, index) => frame.measuredKneeAngle - loadingToRelease[index].measuredKneeAngle);
   const hipDeltas = loadingToRelease.slice(1).map((frame, index) => frame.hipAngle - loadingToRelease[index].hipAngle);
   const torsoLength = median(analysisFrames.map((frame) => frame.torsoLength).filter((value) => value > 0)) || 0.25;
   const measuredShoulderWidth = median(analysisFrames.map((frame) => frame.shoulderWidth).filter((value) => value > 0));
   const shoulderWidth = Math.max(measuredShoulderWidth || 0, torsoLength * 0.5);
-  const wristPath = analysisFrames;
-  const wristXs = wristPath.map((frame) => frame.wristX);
+  const wristPath = analysisFrames.filter((frame) => Number.isFinite(frame.shootingWristX) && Number.isFinite(frame.shootingWristY));
   const pathStart = wristPath[0];
   const pathEnd = wristPath.at(-1);
-  const lineLength = pointDistance(pathStart, pathEnd) || 1;
-  const pathResiduals = wristPath.map((frame) => Math.abs((pathEnd.x - pathStart.x) * (pathStart.y - frame.wristY) - (pathStart.x - frame.wristX) * (pathEnd.y - pathStart.y)) / lineLength);
+  const lineLength = pointDistance(
+    pathStart && { x: pathStart.shootingWristX, y: pathStart.shootingWristY },
+    pathEnd && { x: pathEnd.shootingWristX, y: pathEnd.shootingWristY },
+  ) || 1;
+  const pathResiduals = pathStart && pathEnd ? wristPath.map((frame) => Math.abs(
+    (pathEnd.shootingWristX - pathStart.shootingWristX) * (pathStart.shootingWristY - frame.shootingWristY)
+      - (pathStart.shootingWristX - frame.shootingWristX) * (pathEnd.shootingWristY - pathStart.shootingWristY),
+  ) / lineLength) : [];
   const trunkValues = values("trunkLean").filter((value) => Math.abs(value) <= 60);
-  const elbowTrendReady = loadingToRelease.length >= 4;
+  const shootingArmFrames = analysisFrames.filter((frame) => Number.isFinite(frame.shootingElbowAngle));
+  const shootingLoadingToRelease = loadingToRelease.filter((frame) => Number.isFinite(frame.shootingElbowAngle));
+  const shootingElbowDeltas = shootingLoadingToRelease.slice(1).map((frame, index) => (frame.shootingElbowAngle - shootingLoadingToRelease[index].shootingElbowAngle) / Math.max(0.001, frame.time - shootingLoadingToRelease[index].time));
+  const elbowTrendReady = shootingLoadingToRelease.length >= 4;
 
   const metrics = {
-    elbowRelease: round(release.elbowAngle), elbowMin: round(percentile(values("elbowAngle"), 0.1)), elbowRange: round(percentile(values("elbowAngle"), 0.9) - percentile(values("elbowAngle"), 0.1)),
-    elbowExtensionTrend: elbowTrendReady ? round(regressionSlope(loadingToRelease, "elbowAngle")) : null, elbowInstability: elbowTrendReady ? round(standardDeviation(elbowDeltas)) : null,
-    kneeLowest: round(percentile(values("kneeAngle"), 0.1)), kneeRange: round(percentile(values("kneeAngle"), 0.9) - percentile(values("kneeAngle"), 0.1)), kneeRiseDuration: round(release.time - loading.time, 2),
+    elbowRelease: round(release.shootingElbowAngle), elbowMin: round(percentile(shootingArmFrames.map((frame) => frame.shootingElbowAngle), 0.1)), elbowRange: round(percentile(shootingArmFrames.map((frame) => frame.shootingElbowAngle), 0.9) - percentile(shootingArmFrames.map((frame) => frame.shootingElbowAngle), 0.1)),
+    elbowExtensionTrend: elbowTrendReady ? round(regressionSlope(shootingLoadingToRelease, "shootingElbowAngle")) : null, elbowInstability: elbowTrendReady ? round(standardDeviation(shootingElbowDeltas)) : null,
+    kneeLowest: round(percentile(values("measuredKneeAngle"), 0.1)), kneeRange: round(percentile(values("measuredKneeAngle"), 0.9) - percentile(values("measuredKneeAngle"), 0.1)), kneeRiseDuration: round(release.time - loading.time, 2),
     hipLowest: round(percentile(values("hipAngle"), 0.1)), hipRange: round(percentile(values("hipAngle"), 0.9) - percentile(values("hipAngle"), 0.1)), hipKneeCoordination: round(correlation(kneeDeltas, hipDeltas), 2),
     trunkMax: round(percentile(trunkValues.map(Math.abs), 0.9)), trunkRelease: round(clamp(release.trunkLean, -60, 60)), trunkDrift: round(percentile(trunkValues, 0.9) - percentile(trunkValues, 0.1)),
-    wristRise: round((ready.wristY - release.wristY) / torsoLength * 100), wristLateralDrift: round(extent(wristXs) / shoulderWidth * 100), wristPathStability: round(mean(pathResiduals.filter(Number.isFinite)) / shoulderWidth * 100),
+    wristRise: Number.isFinite(ready.shootingWristY) && Number.isFinite(release.shootingWristY) ? round((ready.shootingWristY - release.shootingWristY) / torsoLength * 100) : null,
+    wristLateralDrift: wristPath.length >= 3 ? round(extent(wristPath.map((frame) => frame.shootingWristX)) / shoulderWidth * 100) : null,
+    wristPathStability: pathResiduals.length >= 3 ? round(mean(pathResiduals.filter(Number.isFinite)) / shoulderWidth * 100) : null,
     pauseDuration: round(findLongestPause(loadingToRelease), 2), rhythmDuration: round(release.time - loadingStart.time, 2),
   };
 
   const confidence = capture.confidence;
-  const confidenceDetail = confidenceNote(capture, "单摄像头只能判断画面平面内趋势");
+  const frontOrRear = viewpoint.category === "front_or_rear";
+  const confidenceDetail = confidenceNote(capture, `${viewpoint.label}；单摄像头只能判断画面平面内趋势`);
   const spatiallyWeak = capture.bodyScale < 0.18;
   const jointConfidence = {
-    elbow: confidence,
-    knee: confidence,
-    hip: Number.isFinite(metrics.hipKneeCoordination) ? confidence : "低",
-    trunk: spatiallyWeak || !Number.isFinite(metrics.trunkMax) || metrics.trunkMax > 35 ? "低" : confidence,
-    wrist: spatiallyWeak || !Number.isFinite(metrics.wristPathStability) ? "低" : confidence,
+    elbow: spatiallyWeak || sideSelection.shootingArmOccluded || frontOrRear || !Number.isFinite(metrics.elbowRelease) ? "低" : confidence,
+    knee: spatiallyWeak || frontOrRear || !Number.isFinite(metrics.kneeRange) ? "低" : confidence,
+    hip: spatiallyWeak || frontOrRear || !Number.isFinite(metrics.hipKneeCoordination) ? "低" : confidence,
+    trunk: frontOrRear || spatiallyWeak || !Number.isFinite(metrics.trunkMax) || metrics.trunkMax > 35 ? "低" : confidence,
+    wrist: sideSelection.shootingArmOccluded || spatiallyWeak || !Number.isFinite(metrics.wristPathStability) ? "低" : confidence,
     rhythm: confidence,
   };
   const strengths = [];
   const issues = [];
-  if (metrics.elbowRelease >= 150) strengths.push(`出手候选帧肘部伸展较完整（${metrics.elbowRelease}°），这一点值得继续保持`);
-  else if (metrics.elbowRelease < 145) issues.push(makeIssue("elbow", "出手伸展可能不足", metrics.elbowRelease < 135 ? "明显" : "中等", `出手肘角 ${metrics.elbowRelease}°，伸展幅度 ${metrics.elbowRange}°`, "可能让出手更多依赖手腕瞬间发力，随挥重复性下降", "下一球让肘部继续向篮筐上方伸展，并把随挥定住 1 秒；不要强行锁肘。", jointConfidence.elbow));
-  else issues.push(makeIssue("elbow", "肘部伸展仍可观察", "轻微", `出手肘角 ${metrics.elbowRelease}°`, "在疲劳或远距离时可能更容易缩短随挥", "下一球保持当前发力，不加速抢出手，只观察肘腕是否连续。", jointConfidence.elbow));
+  if (jointConfidence.elbow !== "低" && metrics.elbowRelease >= 150) strengths.push(`出手候选帧肘部伸展较完整（${metrics.elbowRelease}°），这一点值得继续保持`);
+  else if (jointConfidence.elbow !== "低" && metrics.elbowRelease < 145) issues.push(makeIssue("elbow", "出手伸展可能不足", metrics.elbowRelease < 135 ? "明显" : "中等", `出手肘角 ${metrics.elbowRelease}°，伸展幅度 ${metrics.elbowRange}°`, "可能让出手更多依赖手腕瞬间发力，随挥重复性下降", "下一球让肘部继续向篮筐上方伸展，并把随挥定住 1 秒；不要强行锁肘。", jointConfidence.elbow));
+  else if (jointConfidence.elbow !== "低") issues.push(makeIssue("elbow", "肘部伸展仍可观察", "轻微", `出手肘角 ${metrics.elbowRelease}°`, "在疲劳或远距离时可能更容易缩短随挥", "下一球保持当前发力，不加速抢出手，只观察肘腕是否连续。", jointConfidence.elbow));
 
-  if (metrics.kneeRange >= 22 && metrics.kneeRange <= 62) strengths.push(`检测到清晰的膝关节屈伸（幅度 ${metrics.kneeRange}°），下肢参与明显`);
-  else if (metrics.kneeRange < 22) issues.push(makeIssue("knee", "下沉幅度偏浅", metrics.kneeRange < 12 ? "明显" : "中等", `本次屈伸幅度 ${metrics.kneeRange}°，最低点膝角 ${metrics.kneeLowest}°`, "下肢储能可能不足，上肢需要承担更多发力", `下一球比当前稍深，尝试增加约 ${metrics.kneeRange < 12 ? "10°–15°" : "5°–10°"} 的相对屈膝幅度，不追求固定角度。`, jointConfidence.knee));
-  else issues.push(makeIssue("knee", "下沉幅度可能偏深", "中等", `本次屈伸幅度 ${metrics.kneeRange}°`, "动作时间可能拉长，急停投篮时不易重复", "下一球把下沉幅度比当前减少约 5°–10°，保持起身连续。", jointConfidence.knee));
+  if (jointConfidence.knee !== "低" && metrics.kneeRange >= 22 && metrics.kneeRange <= 62) strengths.push(`检测到清晰的膝关节屈伸（幅度 ${metrics.kneeRange}°），下肢参与明显`);
+  else if (jointConfidence.knee !== "低" && metrics.kneeRange < 22) issues.push(makeIssue("knee", "下沉幅度偏浅", metrics.kneeRange < 12 ? "明显" : "中等", `本次屈伸幅度 ${metrics.kneeRange}°，最低点膝角 ${metrics.kneeLowest}°`, "下肢储能可能不足，上肢需要承担更多发力", `下一球比当前稍深，尝试增加约 ${metrics.kneeRange < 12 ? "10°–15°" : "5°–10°"} 的相对屈膝幅度，不追求固定角度。`, jointConfidence.knee));
+  else if (jointConfidence.knee !== "低") issues.push(makeIssue("knee", "下沉幅度可能偏深", "中等", `本次屈伸幅度 ${metrics.kneeRange}°`, "动作时间可能拉长，急停投篮时不易重复", "下一球把下沉幅度比当前减少约 5°–10°，保持起身连续。", jointConfidence.knee));
 
-  if (Number.isFinite(metrics.hipKneeCoordination) && metrics.hipKneeCoordination >= 0.35) strengths.push("从当前二维趋势看，髋膝伸展方向较一致，动力链衔接较自然");
-  else if (Number.isFinite(metrics.hipKneeCoordination)) issues.push(makeIssue("hip", "髋膝衔接可能不同步", metrics.hipKneeCoordination < 0 ? "中等" : "轻微", `髋膝变化相关系数 ${metrics.hipKneeCoordination}`, "可能出现先起身再举球，或只用上肢补偿的分段感", "下一球只注意一件事：身体起身时让球同时开始向上，不在额前停球。", jointConfidence.hip));
+  if (jointConfidence.hip !== "低" && Number.isFinite(metrics.hipKneeCoordination) && metrics.hipKneeCoordination >= 0.35) strengths.push("从当前二维趋势看，髋膝伸展方向较一致，动力链衔接较自然");
+  else if (jointConfidence.hip !== "低" && Number.isFinite(metrics.hipKneeCoordination)) issues.push(makeIssue("hip", "髋膝衔接可能不同步", metrics.hipKneeCoordination < 0 ? "中等" : "轻微", `髋膝变化相关系数 ${metrics.hipKneeCoordination}`, "可能出现先起身再举球，或只用上肢补偿的分段感", "下一球只注意一件事：身体起身时让球同时开始向上，不在额前停球。", jointConfidence.hip));
 
   if (jointConfidence.trunk !== "低" && metrics.trunkMax <= 12 && metrics.trunkDrift <= 10) strengths.push(`躯干画面轴线较稳定（出手倾角 ${metrics.trunkRelease}°）`);
   else if (jointConfidence.trunk !== "低") issues.push(makeIssue("trunk", "躯干偏移需要控制", metrics.trunkMax > 20 ? "明显" : metrics.trunkMax > 14 ? "中等" : "轻微", `最大画面倾角 ${metrics.trunkMax}°，出手时 ${metrics.trunkRelease}°`, "可能出现身体扑向篮筐或侧移；单摄像头无法可靠区分真实前倾与相机透视", "下一球保持胸口位于双脚中间上方，出手后检查落地点是否接近起跳点。", jointConfidence.trunk));
@@ -364,13 +456,13 @@ export function summarizePoseFrames(frames, shootingHand = "right", context = {}
   else issues.push(makeIssue("rhythm", "动力链可能存在停顿", metrics.pauseDuration > 0.28 ? "明显" : "中等", `最长近似停顿 ${metrics.pauseDuration}s，下沉至出手 ${metrics.rhythmDuration}s`, "动作可能变成一段一段，上肢需要重新启动发力", "下一球用“下—上”两拍口令，最低点不停住，起身和举球同时发生。", jointConfidence.rhythm));
 
   if (!strengths.length) strengths.push("本次关键点连续可见，已经具备基于趋势进行动作复盘的条件");
-  const priorities = issues.sort((a, b) => SEVERITY_WEIGHT[b.severity] - SEVERITY_WEIGHT[a.severity]).slice(0, 2);
+  const priorities = issues.filter((issue) => issue.confidence !== "低").sort((a, b) => SEVERITY_WEIGHT[b.severity] - SEVERITY_WEIGHT[a.severity]).slice(0, 2);
   const nextShot = priorities.map((issue) => issue.nextBall);
   if (nextShot.length < 2) nextShot.push(metrics.elbowRelease >= 150 ? "继续保持当前肘部伸展，出手后把随挥定住 1 秒。" : "保持当前动作节奏，再投一球并观察相同指标能否重复。");
   if (nextShot.length < 2) nextShot.push("保持最低点不停顿，让起身和举球继续连在一起。");
   const prescriptions = (priorities.length ? priorities : [{ joint: "rhythm" }]).map((issue) => ({ ...drillFor(issue.joint), forIssue: issue.title || "动作重复性" }));
-  const elbowEvaluation = metrics.elbowRelease >= 150 ? "伸展较充分" : metrics.elbowRelease < 145 ? "伸展偏少" : "接近参考趋势，继续观察";
-  const kneeEvaluation = metrics.kneeRange < 22 ? "下沉偏浅" : metrics.kneeRange > 62 ? "下沉可能偏深" : "下沉幅度较清晰";
+  const elbowEvaluation = !Number.isFinite(metrics.elbowRelease) ? "投篮侧手臂证据不足" : metrics.elbowRelease >= 150 ? "伸展较充分" : metrics.elbowRelease < 145 ? "伸展偏少" : "接近参考趋势，继续观察";
+  const kneeEvaluation = !Number.isFinite(metrics.kneeRange) ? "膝角证据不足，仅保留动作时序" : metrics.kneeRange < 22 ? "下沉偏浅" : metrics.kneeRange > 62 ? "下沉可能偏深" : "下沉幅度较清晰";
   const trunkEvaluation = Number.isFinite(metrics.trunkMax) && metrics.trunkMax > 14 ? "画面内倾斜较明显" : "躯干轴线较稳定";
   const wristEvaluation = metrics.wristLateralDrift > 60 ? "二维轨迹漂移偏大" : "二维轨迹较集中";
   const rhythmEvaluation = metrics.pauseDuration > 0.16 ? "可能存在分段或停顿" : "动作衔接较连续";
@@ -385,11 +477,31 @@ export function summarizePoseFrames(frames, shootingHand = "right", context = {}
   ];
   for (const item of sections) item.currentData = item.currentData.map((text) => text.replaceAll("null", "—").replaceAll("% 肩宽", "% 上身参考宽度"));
   for (const item of sections) item.confidence = confidenceNote({ ...capture, confidence: jointConfidence[item.id] }, "单摄像头只能判断画面平面内趋势");
+  if (jointConfidence.elbow === "低") {
+    const elbowSection = sections.find((item) => item.id === "elbow");
+    elbowSection.evaluation = sideSelection.shootingArmOccluded ? "动作阶段已识别，投篮侧手臂精细角度暂不强判" : "当前视角不适合强判肘部屈伸角";
+    elbowSection.good = "系统没有用更清楚的辅助侧手臂冒充投篮手臂数据";
+    elbowSection.problem = sideSelection.shootingArmOccluded ? "投篮手臂位于身体远侧，肩肘腕连续可见帧不足" : "正面或背面透视会压缩屈伸角度";
+    elbowSection.nextShot = "本球的阶段和节奏仍可使用；如需精细肘腕分析，再补拍一段投篮手侧或斜侧视频。";
+  }
+  if (jointConfidence.knee === "低") {
+    const kneeSection = sections.find((item) => item.id === "knee");
+    kneeSection.evaluation = "动作阶段已识别，前后屈膝幅度暂不强判";
+    kneeSection.good = "下沉与起身时序仍可用于节奏判断";
+    kneeSection.problem = "正面或背面画面无法可靠还原矢状面的真实屈膝角";
+    kneeSection.nextShot = "下一球先保持自然下沉；不要仅根据本机位的二维膝角主动加深或变浅。";
+  }
   if (!Number.isFinite(metrics.hipKneeCoordination)) {
     const hipSection = sections.find((item) => item.id === "hip");
     hipSection.evaluation = "主动作窗口样本不足";
     hipSection.good = "髋膝关键点已经被捕捉，系统未用少量帧强判协调性";
     hipSection.problem = "当前样本不足以稳定计算髋膝协同趋势";
+  }
+  if (jointConfidence.hip === "低" && frontOrRear) {
+    const hipSection = sections.find((item) => item.id === "hip");
+    hipSection.evaluation = "可判断髋膝启动时序，不强判前后屈髋幅度";
+    hipSection.problem = "正面或背面透视不适合将二维髋角直接解释为屈髋深度";
+    hipSection.nextShot = "先观察髋膝是否同时启动；需要屈髋幅度时使用侧面或斜侧补拍。";
   }
   if (jointConfidence.trunk === "低") {
     const trunkSection = sections.find((item) => item.id === "trunk");
@@ -402,17 +514,17 @@ export function summarizePoseFrames(frames, shootingHand = "right", context = {}
     const wristSection = sections.find((item) => item.id === "wrist");
     wristSection.evaluation = "当前轨迹只作方向提示";
     wristSection.good = "系统只分析手腕二维点位，没有伪造手指拨球结论";
-    wristSection.problem = "人物较小或有效轨迹过短，左右漂移比例不宜用于精确纠正";
-    wristSection.nextShot = "下一球先拍近一些，保持投篮手完整入镜，再比较随挥方向。";
+    wristSection.problem = sideSelection.shootingArmOccluded ? "投篮手位于身体远侧，系统没有用辅助手轨迹替代投篮手轨迹" : "人物较小或有效轨迹过短，左右漂移比例不宜用于精确纠正";
+    wristSection.nextShot = sideSelection.shootingArmOccluded ? "本球继续使用节奏结论；需要随挥路线时补拍投篮手侧或斜侧视频。" : "下一球先拍近一些，保持投篮手完整入镜，再比较随挥方向。";
   }
 
   const dataRows = [
-    dataRow("出手肘角", `${metrics.elbowRelease}°`, "约 145°–175°，结合个人出手模式", metrics.elbowRelease < 145 ? "相对偏小" : "区间内", elbowEvaluation, sections[0].nextShot, confidence),
-    dataRow("肘部伸展幅度", `${metrics.elbowRange}°`, "重点看伸展是否连续、重复", metrics.elbowRange < 25 ? "幅度偏小" : "有明显伸展", metrics.elbowExtensionTrend > 0 ? "向伸展方向" : "趋势需观察", sections[0].nextShot, confidence),
-    dataRow("最低点膝角", `${metrics.kneeLowest}°`, "不设唯一目标，结合相对下沉幅度", "仅记录", kneeEvaluation, sections[1].nextShot, confidence),
-    dataRow("膝部屈伸幅度", `${metrics.kneeRange}°`, "个人同机位约 22°–62°趋势参考", metrics.kneeRange < 22 ? "偏小" : metrics.kneeRange > 62 ? "偏大" : "范围内", kneeEvaluation, sections[1].nextShot, confidence),
-    dataRow("髋膝协调", `${metrics.hipKneeCoordination}`, "同向连续变化，长期看一致性", metrics.hipKneeCoordination < 0.35 ? "协同偏弱" : "协同较好", sections[2].evaluation, sections[2].nextShot, confidence),
-    dataRow("出手躯干倾角", `${metrics.trunkRelease}°`, "优先看同机位变化；绝对值仅作画面参考", Math.abs(metrics.trunkRelease) > 14 ? "偏移明显" : "相对稳定", trunkEvaluation, sections[3].nextShot, confidence),
+    dataRow("出手肘角", formatMetric(metrics.elbowRelease), "约 145°–175°，结合个人出手模式", metrics.elbowRelease < 145 ? "相对偏小" : "区间内", elbowEvaluation, sections[0].nextShot, confidence),
+    dataRow("肘部伸展幅度", formatMetric(metrics.elbowRange), "重点看伸展是否连续、重复", metrics.elbowRange < 25 ? "幅度偏小" : "有明显伸展", metrics.elbowExtensionTrend > 0 ? "向伸展方向" : "趋势需观察", sections[0].nextShot, confidence),
+    dataRow("最低点膝角", formatMetric(metrics.kneeLowest), "不设唯一目标，结合相对下沉幅度", "仅记录", kneeEvaluation, sections[1].nextShot, confidence),
+    dataRow("膝部屈伸幅度", formatMetric(metrics.kneeRange), "个人同机位约 22°–62°趋势参考", metrics.kneeRange < 22 ? "偏小" : metrics.kneeRange > 62 ? "偏大" : "范围内", kneeEvaluation, sections[1].nextShot, confidence),
+    dataRow("髋膝协调", Number.isFinite(metrics.hipKneeCoordination) ? `${metrics.hipKneeCoordination}` : "—", "同向连续变化，长期看一致性", metrics.hipKneeCoordination < 0.35 ? "协同偏弱" : "协同较好", sections[2].evaluation, sections[2].nextShot, confidence),
+    dataRow("出手躯干倾角", formatMetric(metrics.trunkRelease), "优先看同机位变化；绝对值仅作画面参考", Math.abs(metrics.trunkRelease) > 14 ? "偏移明显" : "相对稳定", trunkEvaluation, sections[3].nextShot, confidence),
     dataRow("手腕横向漂移", `${metrics.wristLateralDrift}% 肩宽`, "越集中越利于重复；不分析手指", metrics.wristLateralDrift > 60 ? "漂移较大" : "较集中", wristEvaluation, sections[4].nextShot, confidence),
     dataRow("最长近似停顿", `${metrics.pauseDuration}s`, "连续动作通常不出现明显静止段", metrics.pauseDuration > 0.16 ? "可能停顿" : "未见明显停顿", rhythmEvaluation, sections[5].nextShot, confidence),
   ];
@@ -425,9 +537,18 @@ export function summarizePoseFrames(frames, shootingHand = "right", context = {}
   const wristRow = dataRows.find((item) => item.metric === "手腕横向漂移");
   wristRow.current = wristRow.current.replace("肩宽", "上身参考宽度");
   for (const item of dataRows) {
-    if (item.metric.includes("肘")) item.confidence = jointConfidence.elbow;
-    else if (item.metric.includes("膝") && !item.metric.includes("髋膝")) item.confidence = jointConfidence.knee;
-    else if (item.metric.includes("髋膝")) item.confidence = jointConfidence.hip;
+    if (item.metric.includes("肘")) {
+      item.confidence = jointConfidence.elbow;
+      if (item.confidence === "低") { item.deviation = "证据不足"; item.evaluation = "暂不强判"; }
+    }
+    else if (item.metric.includes("膝") && !item.metric.includes("髋膝")) {
+      item.confidence = jointConfidence.knee;
+      if (item.confidence === "低") { item.deviation = "视角不适用"; item.evaluation = "只保留时序"; }
+    }
+    else if (item.metric.includes("髋膝")) {
+      item.confidence = jointConfidence.hip;
+      if (item.confidence === "低") { item.deviation = "视角不适用"; item.evaluation = "只观察启动时序"; }
+    }
     else if (item.metric.includes("躯干")) {
       item.confidence = jointConfidence.trunk;
       if (item.confidence === "低") { item.deviation = "证据不足"; item.evaluation = "暂不强判"; }
@@ -438,10 +559,10 @@ export function summarizePoseFrames(frames, shootingHand = "right", context = {}
     else item.confidence = jointConfidence.rhythm;
   }
   const events = { loadingStart: eventAt(loadingStart, "下沉开始"), lowest: eventAt(loading, "最低点"), riseStart: eventAt(loading, "起身"), release: eventAt(release, "出手"), followThrough: eventAt(followThrough, "随挥") };
-  const curves = analysisFrames.map((frame) => ({ time: round(frame.time, 2), elbow: round(frame.elbowAngle), knee: round(frame.kneeAngle), hip: round(frame.hipAngle), trunk: round(frame.trunkLean), wristX: round(frame.wristX, 3), wristY: round(frame.wristY, 3) }));
+  const curves = analysisFrames.map((frame) => ({ time: round(frame.time, 2), elbow: round(frame.shootingElbowAngle), knee: round(frame.measuredKneeAngle), hip: round(frame.hipAngle), trunk: round(frame.trunkLean), wristX: round(frame.shootingWristX, 3), wristY: round(frame.shootingWristY, 3) }));
   return finalizeAnalysisResult({
     validFrames: valid.length, totalFrames: frames.length, validRatio, capture, ready, loading, release, events, metrics,
-    strengths, priorities, nextShot, dataRows, sections, prescriptions, curves, analysisFrames,
+    strengths, priorities, nextShot, dataRows, sections, prescriptions, curves, analysisFrames, jointConfidence,
     suggestions: priorities.length ? priorities.map((item) => ({ title: item.title, detail: `${item.evidence}。${item.nextBall}` })) : strengths.slice(0, 3).map((text) => ({ title: "当前保持", detail: text })),
   }, shootingHand, context);
 }

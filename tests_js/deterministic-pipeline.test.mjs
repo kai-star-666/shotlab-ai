@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { preprocessLandmarkFrames } from "../netlify-site/assets/pipeline/landmark-series.mjs";
 import { selectDeterministicPhases } from "../netlify-site/assets/pipeline/phase-detector.mjs";
+import { chooseOrientationPass, normalizeMirroredLandmarks } from "../netlify-site/assets/pipeline/orientation-normalizer.mjs";
 
 const point = (x, y, visibility = 0.95) => ({ x, y, z: 0, visibility });
 const frame = (sampleIndex, y, visibility = 0.95) => ({ sampleIndex, timeMs: sampleIndex * 100, landmarks: [point(0.5, y, visibility)] });
@@ -40,4 +41,23 @@ test("phase selection reports missing phases instead of inventing them", () => {
   const phases = selectDeterministicPhases([{ sampleIndex: 0, timeMs: 0, kneeAngle: null, elbowAngle: null, wristY: null }]);
   assert.equal(phases.release, null);
   assert.ok(phases.missing.includes("release"));
+});
+
+test("mirrored landmarks restore image coordinates and anatomical sides", () => {
+  const points = Array.from({ length: 33 }, () => null);
+  points[11] = point(0.2, 0.3);
+  points[12] = point(0.7, 0.4);
+  const normalized = normalizeMirroredLandmarks(points);
+  assert.ok(Math.abs(normalized[11].x - 0.3) < 1e-9);
+  assert.equal(normalized[11].y, 0.4);
+  assert.ok(Math.abs(normalized[12].x - 0.8) < 1e-9);
+  assert.equal(normalized[12].y, 0.3);
+});
+
+test("orientation pass deterministically selects the sequence with complete legs", () => {
+  const weak = [{ landmarks: Array.from({ length: 33 }, (_, index) => point(0.5, 0.5, [27, 28].includes(index) ? 0.1 : 0.95)) }];
+  const strong = [{ landmarks: Array.from({ length: 33 }, () => point(0.5, 0.5, 0.95)) }];
+  const selected = chooseOrientationPass(weak, strong);
+  assert.equal(selected.orientationPass, "mirrored-normalized");
+  assert.ok(selected.scores.mirroredNormalized > selected.scores.original);
 });

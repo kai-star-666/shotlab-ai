@@ -1,8 +1,9 @@
 import { FilesetResolver, PoseLandmarker } from "/assets/mediapipe/vision_bundle.mjs?v=20260830-1";
 import { preprocessLandmarkFrames, LANDMARK_FILTER_VERSION } from "./landmark-series.mjs";
+import { chooseOrientationPass, normalizeMirroredLandmarks, ORIENTATION_NORMALIZER_VERSION } from "./orientation-normalizer.mjs";
 
 export const PIPELINE_MANIFEST = Object.freeze({
-  pipelineVersion: "3.0.0",
+  pipelineVersion: "3.2.0",
   sampleIntervalMs: 100,
   maxDurationMs: 30000,
   maxCanvasEdge: 720,
@@ -10,6 +11,7 @@ export const PIPELINE_MANIFEST = Object.freeze({
   modelSha256: "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
   visionBundleSha256: "d885630c297c0b20b1fe86096cb06291c4c8080876f27852e724f24ac603713f",
   landmarkFilterVersion: LANDMARK_FILTER_VERSION,
+  orientationNormalizerVersion: ORIENTATION_NORMALIZER_VERSION,
 });
 
 let visionPromise;
@@ -57,35 +59,48 @@ export async function analyzeVideoDeterministic(video, { shootingHand = "right",
   const canvas = document.createElement("canvas");
   canvas.width = size.width; canvas.height = size.height;
   const context = canvas.getContext("2d", { alpha: false, willReadFrequently: false });
+  const mirroredCanvas = document.createElement("canvas");
+  mirroredCanvas.width = size.width; mirroredCanvas.height = size.height;
+  const mirroredContext = mirroredCanvas.getContext("2d", { alpha: false, willReadFrequently: false });
   const signatureCanvas = document.createElement("canvas"); signatureCanvas.width = 16; signatureCanvas.height = 16;
   const signatureContext = signatureCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
-  const landmarker = await PoseLandmarker.createFromOptions(await vision(), {
+  const options = {
     baseOptions: { modelAssetPath: "/assets/models/pose_landmarker_lite.task" },
     runningMode: "VIDEO", numPoses: 1,
     minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
-  });
-  const decoded = [];
+  };
+  const landmarker = await PoseLandmarker.createFromOptions(await vision(), options);
+  const mirroredLandmarker = await PoseLandmarker.createFromOptions(await vision(), options);
+  const decodedOriginal = [];
+  const decodedMirrored = [];
   const decodedSignatures = [];
   try {
     for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
       const timeMs = sampleIndex * sampleIntervalMs;
       await seek(video, timeMs / 1000);
       context.drawImage(video, 0, 0, size.width, size.height);
+      mirroredContext.setTransform(-1, 0, 0, 1, size.width, 0);
+      mirroredContext.drawImage(canvas, 0, 0);
+      mirroredContext.setTransform(1, 0, 0, 1, 0, 0);
       signatureContext.drawImage(canvas, 0, 0, 16, 16);
       decodedSignatures.push({ sampleIndex, timeMs, pixels: [...signatureContext.getImageData(0, 0, 16, 16).data] });
       const result = landmarker.detectForVideo(canvas, timeMs);
-      decoded.push({ sampleIndex, timeMs, time: timeMs / 1000, landmarks: result.landmarks?.[0] || [] });
+      const mirroredResult = mirroredLandmarker.detectForVideo(mirroredCanvas, timeMs);
+      decodedOriginal.push({ sampleIndex, timeMs, time: timeMs / 1000, landmarks: result.landmarks?.[0] || [] });
+      decodedMirrored.push({ sampleIndex, timeMs, time: timeMs / 1000, landmarks: normalizeMirroredLandmarks(mirroredResult.landmarks?.[0] || []) });
       onProgress(sampleIndex + 1, sampleCount);
       if (sampleIndex % 3 === 0) await new Promise(requestAnimationFrame);
     }
   } finally {
     landmarker.close();
+    mirroredLandmarker.close();
   }
-  const processed = preprocessLandmarkFrames(decoded);
+  const selected = chooseOrientationPass(decodedOriginal, decodedMirrored);
+  const processed = preprocessLandmarkFrames(selected.frames);
   const hashes = {
     decodedFrames: await sha256Json({ size, frames: decodedSignatures }),
     rawLandmarks: await sha256Json(processed.raw),
     filteredLandmarks: await sha256Json(processed.filtered),
   };
-  return { shootingHand, frames: processed.filtered, rawFrames: processed.raw, sampleCount, durationMs, canvasSize: size, hashes, manifest: PIPELINE_MANIFEST };
+  return { shootingHand, frames: processed.filtered, rawFrames: processed.raw, sampleCount, durationMs, canvasSize: size, orientationPass: selected.orientationPass, orientationScores: selected.scores, hashes, manifest: PIPELINE_MANIFEST };
 }

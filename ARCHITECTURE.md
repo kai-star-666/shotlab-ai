@@ -1,4 +1,4 @@
-# ShotLab AI Architecture V3.1
+# ShotLab AI Architecture V3.2
 
 ## 三个确定性边界
 
@@ -9,7 +9,9 @@
   → Training Session Coaching Loop（IndexedDB）
 ```
 
-`pipeline/video-analyzer.mjs` 固定 100ms 采样、最长 30 秒、VIDEO 模式、0.5 三项置信阈值、每球关闭模型，并锁定模型和运行文件 SHA-256。关键点按 visibility 0.55、越界/孤立跳变、最多 2 点插值、5 点二阶 Savitzky–Golay 的顺序处理。原始点计算可信度，滤波点计算角度与阶段。
+`pipeline/video-analyzer.mjs` 固定 100ms 采样、最长 30 秒、VIDEO 模式、0.5 三项置信阈值、每球关闭模型，并锁定模型和运行文件 SHA-256。每球创建两套相互隔离的 CPU PoseLandmarker，对原图和水平镜像图使用相同视频时间戳推理；`orientation-normalizer.mjs` 将镜像结果还原到原坐标和左右身体语义，再按整段肩肘腕/髋膝踝完整度确定唯一方向，禁止逐帧来回切换。关键点随后按 visibility 0.55、越界/孤立跳变、最多 2 点插值、5 点二阶 Savitzky–Golay 的顺序处理。
+
+动作后处理会分别选择可见的手臂侧和下肢侧。缺少脚踝时仍可用髋膝与手腕趋势定位动作阶段，但膝角和相关建议降为低可信度。正面/背面拍摄仍输出阶段与节奏，矢状面的肘膝髋、前倾/后仰不进入 Top 2。
 
 阶段识别只输出 `loadingStart`、`lowestPoint`、`release`、`followThrough` 的采样序号和时间；近似并列候选固定取最早者，证据不足返回缺失，不由 AI 补选。
 

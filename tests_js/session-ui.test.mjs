@@ -27,3 +27,9 @@ test("analyzer app renders structured session analytics instead of only previous
   assert.match(app, /historyRows/);
   assert.match(app, /adjustmentRows/);
 });
+
+test("stable issue engine receives per-joint viewpoint confidence", () => {
+  assert.match(app, /summary\.jointConfidence\?\.\[joint\]/);
+  assert.match(app, /capture\.viewpoint\?\.label/);
+  assert.match(app, /capture\.shootingArmOccluded/);
+});
