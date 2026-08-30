@@ -127,7 +127,7 @@ test("analysis result exposes one complete stable schema for every report sectio
     fileName: "shot_test.mp4",
   });
 
-  assert.equal(result.schemaVersion, "2.1");
+  assert.equal(result.schemaVersion, "3.0");
   for (const key of ["summary", "strengths", "priorities", "nextRep", "metrics", "jointAnalysis", "rhythm", "keyframes", "processedVideo", "skeletonVideo", "charts", "trainingPlan", "confidence", "technicalLimitations", "personalBaseline"]) {
     assert.ok(key in result, `missing ${key}`);
   }

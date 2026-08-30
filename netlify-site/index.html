@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#071017">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:">
   <meta name="description" content="ShotLab AI：上传投篮视频，获得动作数据、关键阶段和训练建议。">
   <title>ShotLab AI｜篮球投篮动作分析</title>
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
@@ -12,6 +13,7 @@
   <link rel="stylesheet" href="/assets/coach-report.css?v=20260830-1">
   <link rel="stylesheet" href="/assets/coach-report-responsive.css?v=20260830-1">
   <link rel="stylesheet" href="/assets/report-v21.css?v=20260830-1">
+  <link rel="stylesheet" href="/assets/session-v3.css?v=20260830-2">
 </head>
 <body>
   <header class="nav shell">
@@ -59,26 +61,36 @@
 
       <div class="analyzer-grid">
         <div class="upload-panel">
+          <div class="session-toolbar">
+            <div><small>TRAINING SESSION</small><strong id="session-state">正在读取本机训练…</strong></div>
+            <button id="new-session" type="button">新训练</button>
+          </div>
           <label class="field-label" for="shooting-hand">投篮手</label>
           <div class="hand-switch" id="shooting-hand">
             <label><input type="radio" name="hand" value="right" checked><span>右手</span></label>
             <label><input type="radio" name="hand" value="left"><span>左手</span></label>
           </div>
 
+          <label class="field-label" for="distance-category">投篮距离</label>
+          <select id="distance-category" class="distance-select">
+            <option value="near_basket">近筐</option><option value="free_throw">罚球</option><option value="mid_range">中距离</option><option value="three_point">三分</option><option value="other">其他</option>
+          </select>
+
           <label class="file-drop" for="video-file">
-            <input id="video-file" type="file" accept="video/mp4,video/quicktime,.mp4,.mov">
+            <input id="video-file" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm">
             <b>＋ 选择投篮视频</b>
             <span>建议 2–30 秒 · MP4/H.264 · 全身入镜</span>
           </label>
           <p id="file-meta" class="file-meta">尚未选择视频</p>
           <video id="video-preview" controls muted playsinline hidden></video>
 
-          <button id="analyze-button" class="button primary analyze-button" type="button" disabled>开始 AI 分析</button>
+          <button id="analyze-button" class="button primary analyze-button" type="button" disabled>分析这一球</button>
           <div id="analysis-progress" class="progress-wrap" hidden>
             <div><span id="progress-label">准备分析</span><b id="progress-value">0%</b></div>
             <progress id="progress-bar" max="100" value="0"></progress>
           </div>
           <p id="analysis-message" class="analysis-message" role="status">请选择一段投篮视频。</p>
+          <div class="session-actions"><button id="end-session" type="button" disabled>结束训练并总结</button><button id="delete-session" type="button">删除当前训练</button><button id="clear-sessions" type="button">清空本机记录</button></div>
         </div>
 
         <div id="result-panel" class="result-panel empty">
@@ -86,6 +98,12 @@
             <span>◌</span><h3>分析结果会显示在这里</h3><p>系统将提取准备、蓄力和出手候选阶段，并生成针对性训练建议。</p>
           </div>
           <div id="analysis-result" hidden>
+            <section class="report-block session-report">
+              <div class="block-heading"><span>S</span><div><small>SESSION COACHING LOOP</small><h3>连续训练进度</h3></div></div>
+              <div id="shot-tabs" class="shot-tabs"></div>
+              <div id="shot-comparison" class="shot-comparison">完成下一球后，这里会显示与上一球的变化。</div>
+              <p id="session-summary" class="session-summary">完成至少 2 球后生成训练总结。</p>
+            </section>
             <section class="report-block report-summary">
               <div class="block-heading"><span>01</span><div><small>ANALYSIS SUMMARY</small><h3>本次分析总结</h3></div></div>
               <div class="result-top"><div><small>综合识别质量</small><strong id="quality-score">—</strong></div><span id="quality-label">等待分析</span></div>
@@ -134,6 +152,7 @@
               <div id="rhythm-copy" class="rhythm-copy"></div>
             </section>
 
+            <details class="advanced-analysis"><summary>高级分析：真人关键帧与骨架叠加</summary>
             <section class="report-block">
               <div class="block-heading"><span>08</span><div><small>KEY FRAME</small><h3>出手关键帧</h3></div></div>
               <canvas id="keyframe-canvas"></canvas>
@@ -145,6 +164,7 @@
               <div class="overlay-player"><video id="processed-video" muted playsinline controls></video><canvas id="processed-overlay"></canvas></div>
               <p id="processed-video-fallback" class="media-fallback" hidden>有效帧不足，暂时无法生成骨架叠加回放，请按拍摄建议重新拍摄。</p>
             </section>
+            </details>
 
             <section class="report-block">
               <div class="block-heading"><span>10</span><div><small>STICK FIGURE REPLAY</small><h3>火柴人动作回放</h3></div></div>
@@ -202,6 +222,6 @@
   </main>
 
   <footer class="shell"><span>SHOTLAB AI · 2026</span><span>Built for better shooting decisions.</span></footer>
-  <script type="module" src="/assets/analyzer-app.mjs?v=20260830-1"></script>
+  <script type="module" src="/assets/analyzer-app.mjs?v=20260830-2"></script>
 </body>
 </html>

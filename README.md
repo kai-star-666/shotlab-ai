@@ -1,4 +1,4 @@
-# ShotLab AI · 数据型投篮教练 V2.1
+# ShotLab AI · 稳定分析与连续训练教练 V3.0
 
 直接在电脑、手机和微信内置浏览器中运行的篮球投篮动作分析网页。用户选择视频后，MediaPipe 模型在浏览器本地完成姿态识别；视频不上传到 Streamlit 或项目服务器。
 
@@ -6,7 +6,11 @@
 
 ## 当前网页能力
 
-- 输出完整的 `AnalysisResult 2.1`，一个数据对象驱动所有报告区块；
+- 输出完整的 `AnalysisResult 3.0`，一个数据对象驱动所有报告区块；
+- 每球新建并关闭 CPU PoseLandmarker，固定每 100ms 采样，消除运行速度和上一球跟踪状态污染；
+- 支持连续训练 Session、Shot 1/2/3 切换、上一球对比和过度纠正保护；
+- 第 5 个中高可信度样本建立个人中位数/IQR Baseline；
+- IndexedDB 最多保存 30 个训练，刷新可继续；原视频不长期保存；
 - 总结拍摄质量、采样点、有效姿态帧、检测率、投篮手、可信度和关键阶段；
 - 区分动作优点、最多两个优先问题、下一球两条指令及“本次不要改什么”；
 - 对肘、膝、髋、躯干、手腕轨迹和节奏生成数据—解释—建议链；
@@ -23,11 +27,22 @@
 ## 测试
 
 ```powershell
-node --test tests_js/analyzer-core.test.mjs
-py -m pytest -q
+npm ci
+npm test
+& 'C:\Users\39576\AppData\Local\Programs\Python\Python313\python.exe' -m unittest discover -s tests -v
 ```
 
-发布前还需用仓库已有测试视频分别在 390px 手机视口和桌面视口执行端到端分析，验证所有区块非空、双回放可用、无控制台错误和页面横向溢出。
+启动 `netlify-site/` 静态服务器后，可用本地视频跑正式 10 次报告：
+
+```powershell
+npm run repeatability -- "http://127.0.0.1:8088/?debug=1#analyzer" "C:\path\to\shot_test.mp4"
+```
+
+报告写入 `outputs/repeatability_report.json`，包含 5 次同页面、5 次新页面结果、分层哈希、统计量、分类一致率和 IndexedDB 恢复球数。测试视频与报告均在 `outputs/`，不会提交公开仓库。
+
+发布门槛分为 Test A–E：A 同页面重复 5 次；B 新页面重复 5 次；C 远景/残缺身体只给复拍建议；D 两球比较、过度纠正和 IndexedDB 恢复；E 桌面、390px、WebKit/微信内置浏览器冒烟测试。
+
+自动化 Test E 已覆盖 Chromium 桌面、390px 视口与 Windows Playwright WebKit 布局。Windows 的无头 WebKit 无法稳定读取本地 Blob 视频 metadata，因此真实 iPhone Safari / 微信内置浏览器选择 H.264 MP4 并完整分析一球，仍属于发布后的人工设备验收项。
 
 ## 科学性边界
 

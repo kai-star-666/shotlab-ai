@@ -1,0 +1,13 @@
+{
+  "name": "shotlab-ai",
+  "private": true,
+  "version": "3.0.0",
+  "scripts": {
+    "test": "node --test tests_js/*.test.mjs",
+    "repeatability": "node tools/repeatability-runner.cjs",
+    "session-smoke": "node tools/session-smoke.cjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}

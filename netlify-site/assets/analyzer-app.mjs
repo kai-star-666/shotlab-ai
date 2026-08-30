@@ -1,5 +1,8 @@
-import { FilesetResolver, PoseLandmarker } from "/assets/mediapipe/vision_bundle.mjs?v=20260830-1";
 import { formatMetric, summarizePoseFrames } from "/assets/analyzer-core.mjs?v=20260830-1";
+import { analyzeVideoDeterministic, sha256Json } from "/assets/pipeline/video-analyzer.mjs?v=20260830-2";
+import { evaluateIssues, loadIssueKnowledge } from "/assets/coaching/issue-engine.mjs?v=20260830-2";
+import { appendShot, buildSessionSummary, createSession } from "/assets/session/session-coach.mjs?v=20260830-2";
+import { openSessionStore } from "/assets/session/session-store.mjs?v=20260830-2";
 
 const $ = (selector) => document.querySelector(selector);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -12,12 +15,14 @@ const progressBar = $("#progress-bar");
 const progressLabel = $("#progress-label");
 const progressValue = $("#progress-value");
 let objectUrl = null;
-let poseLandmarker = null;
-let inferenceTimestamp = 0;
 let replayAnimation = null;
 let replayState = null;
 let selectedFile = null;
 let currentSummary = null;
+let currentShotId = null;
+let activeSession = null;
+let sessionStore = null;
+let issueKnowledge = null;
 
 if (/MicroMessenger/i.test(navigator.userAgent)) document.documentElement.classList.add("wechat-browser");
 
@@ -43,22 +48,49 @@ async function seek(time) {
   await ready;
 }
 
-async function loadModel() {
-  if (poseLandmarker) return poseLandmarker;
-  setProgress(4, "正在加载本地 AI 模型");
-  const vision = await FilesetResolver.forVisionTasks("/assets/mediapipe/wasm");
-  const options = {
-    baseOptions: { modelAssetPath: "/assets/models/pose_landmarker_lite.task", delegate: "GPU" },
-    runningMode: "VIDEO", numPoses: 1, minPoseDetectionConfidence: 0.45, minTrackingConfidence: 0.45,
-  };
-  try {
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, options);
-  } catch (gpuError) {
-    console.warn("GPU delegate unavailable; falling back to CPU.", gpuError);
-    options.baseOptions.delegate = "CPU";
-    poseLandmarker = await PoseLandmarker.createFromOptions(vision, options);
+const issueCopy = {
+  CAPTURE_QUALITY_LOW: ["拍摄质量不足", "画面证据不足会放大角度和阶段误差", "capture"],
+  TRUNK_FORWARD_LEAN: ["躯干偏移需要控制", "可能改变出手空间和落地点", "trunk"],
+  TRUNK_UNSTABLE: ["躯干稳定性需要观察", "轴线波动可能降低出手重复性", "trunk"],
+  KNEE_DIP_SHALLOW: ["下沉幅度偏浅", "下肢储能可能不足，上肢承担更多发力", "knee"],
+  KNEE_DIP_DEEP: ["下沉幅度可能偏深", "动作时间可能拉长，急停时不易重复", "knee"],
+  KNEE_DIP_INCONSISTENT: ["多球下沉深度不稳定", "每球发力条件变化会降低重复性", "knee"],
+  ELBOW_EXTENSION_LIMITED: ["出手伸展可能不足", "随挥重复性可能下降", "elbow"],
+  ELBOW_PATH_UNSTABLE: ["肘部伸展趋势不稳定", "举球与出手可能出现分段", "elbow"],
+  WRIST_PATH_UNSTABLE: ["手腕二维轨迹不稳定", "左右方向更依赖临场修正", "wrist"],
+  RHYTHM_DISCONNECTED: ["动力链可能存在停顿", "下肢动量可能在出手前中断", "rhythm"],
+};
+
+function applyStableIssues(summary) {
+  const confidence = summary.capture.confidence;
+  const confidences = Object.fromEntries(Object.keys(summary.metrics).map((key) => [key, confidence]));
+  if (summary.capture.bodyScale < 0.18) {
+    for (const key of ["trunkMax", "trunkRelease", "trunkDrift", "wristPathStability", "wristLateralDrift", "wristRise"]) confidences[key] = "低";
   }
-  return poseLandmarker;
+  const evaluated = evaluateIssues({ metrics: summary.metrics, confidences, capture: summary.capture }, issueKnowledge);
+  summary.priorities = evaluated.priorities.map((issue) => {
+    const [title, impact, joint] = issueCopy[issue.issueCode] || [issue.issueCode, "建议继续观察同机位重复性", "capture"];
+    return { ...issue, title, impact, joint, evidence: `${issue.metricKey} 当前实测 ${issue.value}`, nextBall: issue.cue };
+  });
+  summary.nextRep = evaluated.nextRep;
+  summary.next_rep = evaluated.nextRep;
+  summary.nextShot = evaluated.nextRep;
+  summary.why = summary.priorities.length ? summary.priorities.map((issue) => `${issue.title}：${issue.impact}`) : ["当前没有高优先级动作问题，下一球先验证重复性。"];
+  summary.issueCodes = evaluated.issues.map((issue) => issue.issueCode);
+  summary.summary.oneLine = summary.priorities.length
+    ? `本次优先处理：${summary.priorities.map((issue) => issue.title).join("；")}。`
+    : confidence === "低" ? "本次拍摄证据不足，先提高机位与入镜质量再判断动作。" : "当前没有高优先级动作问题，下一球先验证动作重复性。";
+  return summary;
+}
+
+async function thumbnailDataUrl() {
+  if (!video.videoWidth) return null;
+  const canvas = document.createElement("canvas");
+  const scale = Math.min(1, 320 / Math.max(video.videoWidth, video.videoHeight));
+  canvas.width = Math.max(2, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(2, Math.round(video.videoHeight * scale));
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.72);
 }
 
 input.addEventListener("change", async () => {
@@ -82,7 +114,7 @@ input.addEventListener("change", async () => {
     message.textContent = video.duration > 30 ? "视频较长，将抽样分析前 30 秒。" : "视频已就绪，点击开始分析。";
     button.disabled = false;
   } catch (error) {
-    message.textContent = `${error.message}。建议使用 MP4（H.264）格式。`;
+    message.textContent = `${error.message}。建议手机使用 MP4（H.264），桌面也可尝试 WebM。`;
     button.disabled = true;
   }
 });
@@ -93,25 +125,36 @@ button.addEventListener("click", async () => {
   $("#empty-state").hidden = false;
   $("#result-panel").classList.add("empty");
   try {
-    await loadModel();
-    const duration = Math.min(video.duration, 30);
-    const sampleCount = Math.min(180, Math.max(24, Math.ceil(duration * 10)));
-    const frames = [];
-    for (let index = 0; index < sampleCount; index += 1) {
-      const time = sampleCount === 1 ? 0 : duration * index / (sampleCount - 1);
-      await seek(time);
-      inferenceTimestamp = Math.max(performance.now(), inferenceTimestamp + 1);
-      const result = poseLandmarker.detectForVideo(video, inferenceTimestamp);
-      frames.push({ time, landmarks: result.landmarks?.[0] || [] });
-      setProgress(12 + 78 * (index + 1) / sampleCount, `正在识别动作 ${index + 1}/${sampleCount}`);
-      if (index % 3 === 0) await new Promise(requestAnimationFrame);
-    }
     const hand = document.querySelector('input[name="hand"]:checked').value;
-    const summary = summarizePoseFrames(frames, hand, { duration, sourceFrames: null, fileName: selectedFile?.name || "当前视频" });
+    if (!activeSession) activeSession = createSession({ shootingHand: hand, distanceCategory: $("#distance-category").value });
+    if (activeSession.shootingHand !== hand) throw new Error("同一训练已锁定投篮手，请结束训练后重新选择");
+    setProgress(4, "正在创建独立 CPU 姿态模型");
+    const pipeline = await analyzeVideoDeterministic(video, {
+      shootingHand: hand,
+      onProgress: (index, count) => setProgress(10 + 80 * index / count, `固定采样 ${index}/${count}`),
+    });
+    let summary = summarizePoseFrames(pipeline.frames, hand, {
+      duration: pipeline.durationMs / 1000, sourceFrames: null, fileName: selectedFile?.name || "当前视频",
+      rawFrames: pipeline.rawFrames, preprocessed: true,
+    });
+    summary.pipeline = { ...pipeline.manifest, canvasSize: pipeline.canvasSize, hashes: pipeline.hashes };
+    summary.phasesHash = await sha256Json(summary.events);
+    summary = applyStableIssues(summary);
+    summary.deterministicNextRep = [...summary.nextRep];
+    summary.finalHash = await sha256Json({ metrics: summary.metrics, events: summary.events, strengths: summary.strengths, issueCodes: summary.priorities.map((issue) => issue.issueCode), nextRep: summary.nextRep });
     setProgress(94, "正在生成训练建议");
-    await renderResult(summary, hand);
+    activeSession = appendShot(activeSession, {
+      analysis: summary,
+      fileMeta: { name: selectedFile?.name || "当前视频", size: selectedFile?.size || 0, duration: video.duration },
+      thumbnail: await thumbnailDataUrl(),
+    });
+    currentShotId = activeSession.shots.at(-1).shotId;
+    activeSession.sessionSummary = buildSessionSummary(activeSession);
+    await sessionStore.save(activeSession);
+    await renderResult(activeSession.shots.at(-1).analysis, hand);
+    renderSession();
     setProgress(100, "分析完成");
-    message.textContent = "分析完成。你可以更换视频继续测试。";
+    message.textContent = `第 ${activeSession.shots.length} 球分析完成。更换视频即可继续本次训练。`;
   } catch (error) {
     console.error(error);
     message.textContent = `分析未完成：${error.message || "浏览器不支持当前模型"}。请优先使用最新版 Chrome、Edge 或 Safari。`;
@@ -121,7 +164,73 @@ button.addEventListener("click", async () => {
   }
 });
 
-async function renderResult(summary, hand) {
+function renderSession() {
+  const session = activeSession;
+  $("#session-state").textContent = session ? `进行中 · ${session.shots.length} 球 · ${$("#distance-category").selectedOptions[0].textContent}` : "尚未开始训练";
+  $("#end-session").disabled = !session || session.shots.length < 2;
+  $("#distance-category").disabled = Boolean(session);
+  document.querySelectorAll('input[name="hand"]').forEach((item) => { item.disabled = Boolean(session); });
+  const tabs = $("#shot-tabs");
+  tabs.replaceChildren(...(session?.shots || []).map((shot) => {
+    const tab = makeText("button", shot.shotId === currentShotId ? "active" : "", `Shot ${shot.shotNumber}`);
+    tab.type = "button";
+    tab.addEventListener("click", async () => { currentShotId = shot.shotId; await renderResult(shot.analysis, session.shootingHand, { archivedVideo: shot !== session.shots.at(-1) }); renderSession(); renderComparison(shot); });
+    return tab;
+  }));
+  if (session?.shots.length) renderComparison(session.shots.find((shot) => shot.shotId === currentShotId) || session.shots.at(-1));
+  $("#session-summary").textContent = session?.sessionSummary?.status === "formal"
+    ? `正式总结：${session.baseline?.sampleCount || 0} 球基线已建立；改善最多 ${session.sessionSummary.mostImprovedMetric || "暂未确认"}；有效 cue ${session.sessionSummary.mostEffectiveCue || "继续收集"}；仍需观察 ${session.sessionSummary.stillUnstableMetric || "暂无突出项"}；下次重点 ${session.sessionSummary.nextFocus || "保持稳定动作"}。`
+    : session?.shots.length >= 2 ? `暂定总结：已完成 ${session.shots.length} 球，可继续到 5 球建立个人基线。` : "完成至少 2 球后生成训练总结。";
+}
+
+function renderComparison(shot) {
+  const target = $("#shot-comparison");
+  if (!shot?.comparison) { target.textContent = "完成下一球后，这里会显示与上一球的变化。"; return; }
+  if (!shot.comparison.comparable) { target.textContent = `本球不做强对比：${shot.comparison.reason}`; return; }
+  const labels = { improved: "改善", stable: "稳定", worsened: "退步", overcorrected: "纠正过头", not_comparable: "不可比" };
+  const rows = Object.entries(shot.comparison.metrics).filter(([, item]) => Number.isFinite(item.delta) && item.status !== "stable").slice(0, 4);
+  target.replaceChildren(...rows.map(([key, item]) => makeText("span", `comparison-${item.status}`, `${key} ${item.delta > 0 ? "+" : ""}${item.delta.toFixed(1)} · ${labels[item.status]}`)));
+  if (!rows.length) target.textContent = "与上一球相比，核心指标保持稳定。";
+}
+
+$("#new-session").addEventListener("click", () => {
+  activeSession = null; currentShotId = null; renderSession();
+  message.textContent = "已准备新训练，请选择投篮手、距离和第一球视频。";
+});
+
+$("#end-session").addEventListener("click", async () => {
+  if (!activeSession || activeSession.shots.length < 2) return;
+  activeSession = { ...activeSession, status: "completed", sessionSummary: buildSessionSummary(activeSession), updatedAt: new Date().toISOString() };
+  await sessionStore.save(activeSession); renderSession();
+  message.textContent = activeSession.sessionSummary.status === "formal" ? "训练已结束，正式总结已生成。" : "训练已结束，已生成暂定总结。";
+});
+
+$("#clear-sessions").addEventListener("click", async () => {
+  await sessionStore.clear(); activeSession = null; currentShotId = null; renderSession();
+  message.textContent = "本机训练记录已清空。";
+});
+
+$("#delete-session").addEventListener("click", async () => {
+  if (!activeSession) return;
+  await sessionStore.delete(activeSession.sessionId); activeSession = null; currentShotId = null; renderSession();
+  message.textContent = "当前训练已从本机删除。";
+});
+
+async function initializeSession() {
+  [issueKnowledge, sessionStore] = await Promise.all([loadIssueKnowledge(), openSessionStore()]);
+  activeSession = await sessionStore.latestActive();
+  if (activeSession) {
+    currentShotId = activeSession.shots.at(-1)?.shotId || null;
+    const hand = document.querySelector(`input[name="hand"][value="${activeSession.shootingHand}"]`); if (hand) hand.checked = true;
+    $("#distance-category").value = activeSession.distanceCategory;
+    message.textContent = `已恢复本机训练（${activeSession.shots.length} 球）。旧视频未长期保存，可继续上传下一球。`;
+  }
+  renderSession();
+}
+
+initializeSession().catch((error) => { console.error(error); message.textContent = `训练数据初始化失败：${error.message}`; });
+
+async function renderResult(summary, hand, { archivedVideo = false } = {}) {
   stopReplay();
   currentSummary = summary;
   const percent = summary.capture.score;
@@ -160,12 +269,15 @@ async function renderResult(summary, hand) {
   renderJointSections(summary.sections.filter((section) => section.id !== "rhythm"));
   renderRhythm(summary);
   renderPrescriptions(summary.prescriptions);
-  renderAngleChart(summary.curves, summary.events);
-  prepareReplay(summary.analysisFrames, hand, summary.events);
-  prepareOverlayReplay(summary, hand);
+  renderAngleChart(summary.curves || [], summary.events);
+  prepareReplay(summary.analysisFrames || [], hand, summary.events);
+  if (archivedVideo) {
+    $("#processed-video").hidden = true; $("#processed-overlay").hidden = true; $("#processed-video-fallback").hidden = false;
+    $("#processed-video-fallback").textContent = "原视频未长期保存；本机仅保留分析数据和缩略图。";
+  } else prepareOverlayReplay(summary, hand);
   $("#limitation-list").replaceChildren(...summary.technicalLimitations.map((text) => makeText("li", "", text)));
   renderDebugData(summary);
-  if (summary.release) {
+  if (summary.release && !archivedVideo) {
     await seek(summary.release.time);
     drawKeyframe(summary.release, hand, summary.events);
   } else {

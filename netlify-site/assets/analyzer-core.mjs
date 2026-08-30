@@ -1,3 +1,5 @@
+import { selectDeterministicPhases } from "./pipeline/phase-detector.mjs";
+
 const SIDE = {
   left: { shoulder: 11, elbow: 13, wrist: 15, hip: 23, knee: 25, ankle: 27 },
   right: { shoulder: 12, elbow: 14, wrist: 16, hip: 24, knee: 26, ankle: 28 },
@@ -107,31 +109,17 @@ function smoothFrames(valid) {
 }
 
 function selectPrimaryShot(valid) {
-  let best = null;
-  let fallback = null;
-  for (const candidate of valid) {
-    const before = valid.filter((frame) => frame.time >= candidate.time - 1.1 && frame.time <= candidate.time);
-    if (before.length < 3) continue;
-    const torso = median(before.map((frame) => frame.torsoLength)) || 0.25;
-    const wristRise = (Math.max(...before.map((frame) => frame.wristY)) - candidate.wristY) / torso;
-    const kneeExtension = candidate.kneeAngle - Math.min(...before.map((frame) => frame.kneeAngle));
-    const extensionScore = candidate.elbowAngle / 90;
-    const bentArmPenalty = candidate.elbowAngle < 120 ? 2 : 0;
-    const score = wristRise * 1.4 + clamp(kneeExtension / 35, -1, 2) + extensionScore - bentArmPenalty;
-    if (!fallback || score > fallback.score) fallback = { candidate, score };
-    if (candidate.elbowAngle >= 140 && (!best || score > best.score)) best = { candidate, score };
-  }
-  const release = best?.candidate || fallback?.candidate || valid.reduce((highest, frame) => frame.wristY < highest.wristY ? frame : highest);
-  const preWindow = valid.filter((frame) => frame.time >= release.time - 1.2 && frame.time <= release.time);
-  const loadingPool = preWindow.length ? preWindow : valid;
-  const targetKnee = percentile(loadingPool.map((frame) => frame.kneeAngle), 0.12);
-  const loading = loadingPool.reduce((closest, frame) => Math.abs(frame.kneeAngle - targetKnee) < Math.abs(closest.kneeAngle - targetKnee) ? frame : closest);
-  const beforeLoading = loadingPool.filter((frame) => frame.time <= loading.time);
-  const loadingStart = beforeLoading[0] || loadingPool[0];
-  const followCandidates = valid.filter((frame) => frame.time >= release.time && frame.time <= release.time + 0.35);
-  const followThrough = followCandidates.at(-1) || release;
+  const phaseSamples = valid.map((frame, index) => ({ ...frame, sampleIndex: frame.sampleIndex ?? index, timeMs: frame.timeMs ?? Math.round(frame.time * 1000) }));
+  const phases = selectDeterministicPhases(phaseSamples);
+  const byIndex = (entry) => entry ? phaseSamples.find((frame) => frame.sampleIndex === entry.sampleIndex) : null;
+  const loadingStart = byIndex(phases.loadingStart);
+  const loading = byIndex(phases.lowestPoint);
+  const release = byIndex(phases.release);
+  const followThrough = byIndex(phases.followThrough);
+  if (!loadingStart || !loading || !release || !followThrough) return { ready: null, loadingStart, loading, release, followThrough, analysisFrames: [], phases };
+  const ready = valid.find((frame) => frame.time >= loadingStart.time) || loadingStart;
   const analysisFrames = valid.filter((frame) => frame.time >= loadingStart.time && frame.time <= followThrough.time);
-  return { ready: loadingPool[0] || valid[0], loadingStart, loading, release, followThrough, analysisFrames };
+  return { ready, loadingStart, loading, release, followThrough, analysisFrames, phases };
 }
 
 function captureQuality(measured, validRatio) {
@@ -143,7 +131,7 @@ function captureQuality(measured, validRatio) {
   const scaleScore = clamp((bodyScale || 0) / 0.55 * 100, 0, 100);
   const score = Math.round(validRatio * 55 + visibilityScore * 0.3 + scaleScore * 0.15);
   const confidence = validRatio >= 0.8 && averageVisibility >= 0.8 && bodyScale >= 0.3 ? "高"
-    : validRatio >= 0.5 && averageVisibility >= 0.45 && bodyScale >= 0.08 ? "中" : "低";
+    : validRatio >= 0.5 && averageVisibility >= 0.55 && bodyScale >= 0.12 ? "中" : "低";
   return { score, confidence, validRatio, averageVisibility: round(averageVisibility, 2), bodyScale: round(bodyScale, 2), occlusionRatio: round(occlusionRatio, 2) };
 }
 
@@ -241,7 +229,7 @@ function finalizeAnalysisResult(base, shootingHand, context = {}) {
   const priorities = base.priorities || [];
   return {
     ...base,
-    schemaVersion: "2.1",
+    schemaVersion: "3.0",
     summary: {
       oneLine: capture.confidence === "低" ? "本次拍摄证据不足，先提高机位与入镜质量再判断动作。"
         : priorities.length ? `本次最优先处理“${priorities[0].title}”，同时保持已经稳定的动作环节。`
@@ -302,12 +290,19 @@ export function summarizePoseFrames(frames, shootingHand = "right", context = {}
   const indexes = SIDE[shootingHand] || SIDE.right;
   const measured = frames.map((frame) => frameMetrics(frame, indexes));
   const rawValid = measured.filter((frame) => frame.valid);
-  const valid = smoothFrames(rawValid);
+  const valid = context.preprocessed ? rawValid : smoothFrames(rawValid);
   const validRatio = frames.length ? valid.length / frames.length : 0;
-  const capture = captureQuality(measured, validRatio);
+  const confidenceMeasured = context.rawFrames ? context.rawFrames.map((frame) => frameMetrics(frame, indexes)) : measured;
+  const rawValidRatio = confidenceMeasured.length ? confidenceMeasured.filter((frame) => frame.valid).length / confidenceMeasured.length : 0;
+  const capture = captureQuality(confidenceMeasured, rawValidRatio);
   if (!valid.length || capture.confidence === "低") return lowConfidenceReport(frames, measured, capture, shootingHand, context);
 
-  const { ready, loadingStart, loading, release, followThrough, analysisFrames } = selectPrimaryShot(valid);
+  const { ready, loadingStart, loading, release, followThrough, analysisFrames, phases } = selectPrimaryShot(valid);
+  if (!release || analysisFrames.length < 3) {
+    const fallback = lowConfidenceReport(frames, measured, { ...capture, confidence: "低" }, shootingHand, { ...context, phaseMissing: phases?.missing || ["release"] });
+    fallback.phaseDiagnostics = { phases, samples: valid.map(({ sampleIndex, timeMs, time, kneeAngle, elbowAngle, wristY }) => ({ sampleIndex, timeMs, time, kneeAngle: round(kneeAngle), elbowAngle: round(elbowAngle), wristY: round(wristY, 3) })) };
+    return fallback;
+  }
   const loadingToRelease = analysisFrames.filter((frame) => frame.time >= loading.time && frame.time <= release.time);
   const values = (key) => analysisFrames.map((frame) => frame[key]).filter(Number.isFinite);
   const elbowDeltas = loadingToRelease.slice(1).map((frame, index) => (frame.elbowAngle - loadingToRelease[index].elbowAngle) / Math.max(0.001, frame.time - loadingToRelease[index].time));
